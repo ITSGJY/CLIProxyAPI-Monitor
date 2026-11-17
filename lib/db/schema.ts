@@ -119,7 +119,8 @@ export const usagePullAttempts = pgTable(
     metadata: jsonb("metadata").notNull().default({})
   },
   (table) => ({
-    instanceStartedIdx: index("usage_pull_attempts_instance_started_idx").on(table.instanceId, table.startedAt)
+    instanceStartedIdx: index("usage_pull_attempts_instance_started_idx").on(table.instanceId, table.startedAt),
+    emptyCleanupIdx: index("usage_pull_attempts_empty_cleanup_idx").on(table.completedAt).where(sql`${table.status} = 'empty'`)
   })
 );
 

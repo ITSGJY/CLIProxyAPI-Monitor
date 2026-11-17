@@ -11,7 +11,7 @@ The production data store is PostgreSQL 17. SQLite is not used as a production j
 ```text
 CLIProxyAPI v8
   |
-  | RESP AUTH + non-destructive LLEN preflight + LPOP usage (primary)
+  | RESP AUTH + LPOP usage (primary)
   | HTTP GET /v8/management/observability/usage/queue (fallback)
   v
 Collector
@@ -38,7 +38,7 @@ The Collector is disabled by default. It has no default CPA host, port, manageme
 
 The verified CPA v8 implementation exposes:
 
-- RESP AUTH, non-destructive `LLEN usage`, then `LPOP usage <count>` when the queue is non-empty.
+- RESP AUTH followed by `LPOP usage <count>`; CPA v8.0.75 does not implement `LLEN`.
 - HTTP `GET /v8/management/observability/usage/queue?count=<count>`.
 - Both pull operations consume queue items.
 - CPA's in-memory queue broadcasts to active SUBSCRIBE clients and skips normal queue enqueue while subscribers exist.
@@ -46,8 +46,8 @@ The verified CPA v8 implementation exposes:
 Therefore:
 
 1. There must be one authoritative production consumer per CPA instance.
-2. The production mode is Pull-first: RESP LLEN preflight, RESP LPOP, then HTTP fallback only if the RESP transport fails before a destructive pop is attempted.
-3. Empty RESP queues do not create pull-attempt rows and are not a reason to call HTTP.
+2. The production mode is Pull-first: RESP AUTH + LPOP usage; HTTP GET is used only when the RESP transport fails before a destructive pop may have occurred.
+3. CPA v8.0.75 does not implement RESP LLEN. The Collector therefore records a pull attempt before each LPOP, including empty polls; empty-attempt rows are pruned after seven days.
 4. SUBSCRIBE remains experimental and must not run alongside the production Pull collector.
 5. Do not start the new collector beside OMC, Keeper or CPAMP. Their existing collectors must be retired in a separately approved cutover.
 
@@ -55,7 +55,7 @@ Therefore:
 
 LPOP is destructive and CPA does not provide a transactional acknowledgement spanning CPA and PostgreSQL. The durable inbox guarantees replayable processing **after** the inbox transaction commits; it cannot make the CPA pop and PostgreSQL commit atomic.
 
-The Collector uses non-destructive RESP LLEN to avoid writing an audit row for every empty poll. When items are available, it creates a pull-attempt record before LPOP, persists the returned batch to `usage_inbox` in one transaction, and only then runs the Processor. A PostgreSQL lease permits only one Collector worker for a CPA instance; expired leases can be recovered after a process crash. If a process dies after LPOP but before inbox commit, startup recovery marks the attempt interrupted and writes a gap record. This makes the uncertainty observable; it cannot recover an item that CPA has already removed.
+Because CPA v8.0.75 exposes LPOP but not LLEN, the Collector creates a pull-attempt record before each destructive poll. Empty polls are audited and pruned after seven days. Non-empty batches are persisted to `usage_inbox` in one transaction before the Processor runs. A PostgreSQL lease permits only one Collector worker for a CPA instance; expired leases can be recovered after a process crash. If a process dies after LPOP but before inbox commit, startup recovery marks the attempt interrupted and writes a gap record. This makes the uncertainty observable; it cannot recover an item that CPA has already removed.
 
 The Collector must never issue HTTP fallback after a successful RESP pop whose PostgreSQL persistence failed, because that would consume a second batch and obscure the first failure.
 

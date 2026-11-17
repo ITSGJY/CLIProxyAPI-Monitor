@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { test } from "node:test";
-import { encodeRespCommand, getUsageQueueLengthViaResp, parseRespFrame, pullUsageViaResp } from "../../lib/collector/resp-client.mjs";
+import { encodeRespCommand, parseRespFrame, pullUsageViaResp } from "../../lib/collector/resp-client.mjs";
 
 function readRequest(buffer) {
   const firstLineEnd = buffer.indexOf("\r\n");
@@ -74,7 +74,7 @@ test("CPA v8 RESP pull authenticates and consumes only the usage channel", async
   assert.deepEqual(observed[1], ["LPOP", "usage", "100"]);
 });
 
-test("RESP LLEN preflight is non-destructive and returns the queue length", async (t) => {
+test("RESP LPOP with count returns an empty array when the CPA usage queue is empty", async (t) => {
   const observed = [];
   const server = createServer((socket) => {
     let buffer = Buffer.alloc(0);
@@ -86,8 +86,8 @@ test("RESP LLEN preflight is non-destructive and returns the queue length", asyn
         buffer = buffer.subarray(request.next);
         observed.push(request.args);
         if (request.args[0] === "AUTH") socket.write("+OK\r\n");
-        else if (request.args[0] === "LLEN") socket.write(":7\r\n");
-        else socket.write("-ERR unexpected command\r\n");
+        else if (request.args[0] === "LPOP") socket.write("*0\r\n");
+        else socket.write("-ERR unknown command\r\n");
       }
     });
   });
@@ -95,14 +95,14 @@ test("RESP LLEN preflight is non-destructive and returns the queue length", asyn
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const address = server.address();
 
-  const length = await getUsageQueueLengthViaResp({
+  const records = await pullUsageViaResp({
     address: "127.0.0.1:" + address.port,
     password: "test-management-key",
-    queue: "usage"
+    queue: "usage",
+    count: 100
   });
-  assert.equal(length, 7);
-  assert.deepEqual(observed.map((args) => args[0]), ["AUTH", "LLEN"]);
-  assert.deepEqual(observed[1], ["LLEN", "usage"]);
+  assert.deepEqual(records, []);
+  assert.deepEqual(observed, [["AUTH", "test-management-key"], ["LPOP", "usage", "100"]]);
 });
 
 test("RESP LPOP disconnect after command send is marked as uncertain consumption", async (t) => {

@@ -12,7 +12,8 @@ import {
   markCollectorStopped,
   markPullAttemptFailed,
   persistPulledBatch,
-  processInboxBatch
+  processInboxBatch,
+  pruneEmptyPullAttempts
 } from "../lib/collector/postgres-store.mjs";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -104,6 +105,31 @@ test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safet
     assert.equal(completedCommand.rows[0].status, "completed");
     assert.equal(completedCommand.rows[0].claimed_by, null);
     assert.equal(completedCommand.rows[0].lease_expires_at, null);
+
+    const oldEmptyAttempt = await createPullAttempt(scopedPool, {
+      instanceId: config.instanceId,
+      transport: "resp",
+      requestedCount: 100
+    });
+    const recentEmptyAttempt = await createPullAttempt(scopedPool, {
+      instanceId: config.instanceId,
+      transport: "resp",
+      requestedCount: 100
+    });
+    await scopedPool.query(
+      "UPDATE usage_pull_attempts SET status = 'empty', completed_at = now() - interval '8 days' WHERE id = $1",
+      [oldEmptyAttempt]
+    );
+    await scopedPool.query(
+      "UPDATE usage_pull_attempts SET status = 'empty', completed_at = now() WHERE id = $1",
+      [recentEmptyAttempt]
+    );
+    assert.equal(await pruneEmptyPullAttempts(scopedPool, config.instanceId, 7), 1);
+    const remainingEmpty = await scopedPool.query(
+      "SELECT id FROM usage_pull_attempts WHERE id = ANY($1::bigint[]) ORDER BY id",
+      [[oldEmptyAttempt, recentEmptyAttempt]]
+    );
+    assert.deepEqual(remainingEmpty.rows.map((row) => Number(row.id)), [recentEmptyAttempt]);
 
     await scopedPool.query(
       `INSERT INTO model_prices (model, input_price_per_1m, cached_input_price_per_1m, output_price_per_1m)

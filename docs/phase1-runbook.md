@@ -44,12 +44,12 @@ Optional bounds:
 
 - `CPA_USAGE_QUEUE=usage` (any other queue is rejected)
 - `COLLECTOR_MODE=pull-first` (Subscribe is not enabled)
-- `COLLECTOR_POLL_INTERVAL_MS=1000`
+- `COLLECTOR_POLL_INTERVAL_MS=10000`
 - `COLLECTOR_BATCH_SIZE=100`
 - `COLLECTOR_PROCESSOR_BATCH_SIZE=50`
-- `COLLECTOR_LEASE_SECONDS=30`
+- `COLLECTOR_LEASE_SECONDS=60`
 
-Run `pnpm collector` only against an isolated CPA test instance and disposable PostgreSQL database. The command is not run as part of build or CI.
+Run `pnpm collector` only against an isolated CPA test instance and disposable PostgreSQL database. The command is not run as part of build or CI. Empty poll attempts are retained for seven days and pruned automatically; use a 10-second default poll interval to bound audit-row growth.
 
 ## Phase 1 exit criteria
 

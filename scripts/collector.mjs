@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { loadCollectorConfig } from "../lib/collector/config.mjs";
-import { getUsageQueueLengthViaResp, pullUsageViaResp } from "../lib/collector/resp-client.mjs";
+import { pullUsageViaResp } from "../lib/collector/resp-client.mjs";
 import { pullUsageViaHttp } from "../lib/collector/http-queue.mjs";
 import {
   acquireCollectorLease,
@@ -13,6 +13,7 @@ import {
   markInterruptedPullAttempts,
   markPullAttemptFailed,
   persistPulledBatch,
+  pruneEmptyPullAttempts,
   processInboxBatch
 } from "../lib/collector/postgres-store.mjs";
 
@@ -59,6 +60,8 @@ async function run() {
     const leaseAcquired = await acquireCollectorLease(pool, config.instanceId, config.workerId, config.leaseSeconds);
     if (!leaseAcquired) throw new Error("Another Collector worker already owns this CPA instance lease");
     await markInterruptedPullAttempts(pool, config.instanceId, 0);
+    await pruneEmptyPullAttempts(pool, config.instanceId, 7);
+    let lastEmptyAttemptCleanupAt = Date.now();
     console.log(`Collector ready for instance ${config.instanceId}; mode=pull-first; queue=usage`);
 
     while (!stopping) {
@@ -92,56 +95,39 @@ async function run() {
         continue;
       }
 
-      let queueLength = 0;
-      let respPreflightError = null;
-      try {
-        queueLength = await getUsageQueueLengthViaResp({
-          address: config.redisAddress,
-          password: config.managementKey,
-          queue: config.queueName
-        });
-        await heartbeatCollectorState(pool, config.instanceId, config.workerId, "receiving", config.leaseSeconds);
-      } catch (error) {
-        respPreflightError = error;
-      }
+      const respAttemptId = await createPullAttempt(pool, {
+        instanceId: config.instanceId,
+        transport: "resp",
+        queueName: config.queueName,
+        requestedCount: config.batchSize
+      });
 
       let items = [];
       let transport = "resp";
-      let respAttemptId = null;
-      let shouldUseHttp = Boolean(respPreflightError);
+      let attemptId = respAttemptId;
 
-      if (!respPreflightError && queueLength > 0) {
-        respAttemptId = await createPullAttempt(pool, {
-          instanceId: config.instanceId,
-          transport: "resp",
-          queueName: config.queueName,
-          requestedCount: config.batchSize
+      try {
+        items = await pullUsageViaResp({
+          address: config.redisAddress,
+          password: config.managementKey,
+          queue: config.queueName,
+          count: config.batchSize
         });
-        try {
-          items = await pullUsageViaResp({
-            address: config.redisAddress,
-            password: config.managementKey,
-            queue: config.queueName,
-            count: config.batchSize
-          });
-        } catch (respError) {
-          if (respError?.uncertainConsumption) {
-            await recordUncertainPull(pool, config.instanceId, respError);
-            stopping = true;
-            break;
-          }
-          await markPullAttemptFailed(pool, respAttemptId, respError, "resp_pull_failed");
-          shouldUseHttp = true;
+      } catch (respError) {
+        if (respError?.uncertainConsumption) {
+          await recordUncertainPull(pool, config.instanceId, respError);
+          stopping = true;
+          break;
         }
-      }
 
-      if (shouldUseHttp) {
+        await markPullAttemptFailed(pool, respAttemptId, respError, "resp_pull_failed");
         const httpAttemptId = await createPullAttempt(pool, {
           instanceId: config.instanceId,
           transport: "http",
           queueName: config.queueName,
           requestedCount: config.batchSize
         });
+
         try {
           items = await pullUsageViaHttp({
             baseUrl: config.managementBaseUrl,
@@ -149,6 +135,7 @@ async function run() {
             count: config.batchSize
           });
           transport = "http";
+          attemptId = httpAttemptId;
         } catch (httpError) {
           if (httpError?.uncertainConsumption) {
             await recordUncertainPull(pool, config.instanceId, httpError);
@@ -162,35 +149,26 @@ async function run() {
           await sleep(backoff);
           continue;
         }
+      }
 
-        try {
-          await persistPulledBatch(pool, {
-            attemptId: httpAttemptId,
-            instanceId: config.instanceId,
-            transport,
-            queueName: config.queueName,
-            items
-          });
-        } catch (persistError) {
-          await recordUncertainPull(pool, config.instanceId, persistError);
-          stopping = true;
-          break;
-        }
-      } else if (respAttemptId !== null) {
-        try {
-          await persistPulledBatch(pool, {
-            attemptId: respAttemptId,
-            instanceId: config.instanceId,
-            transport,
-            queueName: config.queueName,
-            items
-          });
-        } catch (persistError) {
-          // LPOP is destructive. Do not attempt HTTP fallback after a successful pop.
-          await recordUncertainPull(pool, config.instanceId, persistError);
-          stopping = true;
-          break;
-        }
+      try {
+        await persistPulledBatch(pool, {
+          attemptId,
+          instanceId: config.instanceId,
+          transport,
+          queueName: config.queueName,
+          items
+        });
+      } catch (persistError) {
+        // Both RESP LPOP and the HTTP queue endpoint are destructive.
+        await recordUncertainPull(pool, config.instanceId, persistError);
+        stopping = true;
+        break;
+      }
+
+      if (Date.now() - lastEmptyAttemptCleanupAt >= 6 * 60 * 60 * 1000) {
+        await pruneEmptyPullAttempts(pool, config.instanceId, 7);
+        lastEmptyAttemptCleanupAt = Date.now();
       }
 
       if (items.length > 0) consecutiveFailures = 0;

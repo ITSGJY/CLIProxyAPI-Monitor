@@ -162,6 +162,8 @@ CREATE TABLE "usage_pull_attempts" (
 
 CREATE INDEX "usage_pull_attempts_instance_started_idx"
   ON "usage_pull_attempts" ("instance_id", "started_at" DESC);
+CREATE INDEX "usage_pull_attempts_empty_cleanup_idx"
+  ON "usage_pull_attempts" ("completed_at") WHERE "status" = 'empty';
 
 CREATE TABLE "usage_collector_state" (
   "instance_id" text PRIMARY KEY REFERENCES "usage_collector_instances" ("instance_id") ON DELETE CASCADE,
