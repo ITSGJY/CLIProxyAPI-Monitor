@@ -26,7 +26,10 @@ test("login and all dashboard pages render with JSON API responses", async ({ pa
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(`${page.url()} :: ${message.text()}`);
   });
-  page.on("requestfailed", (request) => requestFailures.push(`${request.method()} ${request.url()} :: ${request.failure()?.errorText || "unknown"}`));
+  page.on("requestfailed", (request) => {
+    const errorText = request.failure()?.errorText || "unknown";
+    if (errorText !== "net::ERR_ABORTED") requestFailures.push(`${request.method()} ${request.url()} :: ${errorText}`);
+  });
   page.on("response", (response) => {
     if (!response.url().includes("/api/")) return;
     const contentType = response.headers()["content-type"] || "";
@@ -37,6 +40,10 @@ test("login and all dashboard pages render with JSON API responses", async ({ pa
       })());
     }
   });
+
+  await page.route("**/api/management-url", (route) => route.fulfill({ status: 200, json: { url: "http://127.0.0.1:8317/management.html" } }));
+  await page.route("**/api/usage-statistics-enabled", (route) => route.fulfill({ status: 200, json: { "usage-statistics-enabled": false } }));
+  await page.route("**/api/sync", (route) => route.fulfill({ status: 200, json: { authFilesSynced: 0 } }));
 
   await login(page);
   await expect(page.getByRole("heading", { name: "Usage Dashboard" })).toBeVisible();

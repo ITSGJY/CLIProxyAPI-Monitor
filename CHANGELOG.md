@@ -336,7 +336,7 @@
 
 ## 2026-11-18 — Phase 7 preparation
 
-- 增加 Next.js standalone Docker 镜像、GHCR immutable SHA 标签发布、Compose 部署模板、浏览器验收和 PostgreSQL 17 重启持久性 CI。
+- 增加 Next.js standalone Docker 镜像、GHCR immutable SHA 标签发布、Compose 部署模板、浏览器验收和 PostgreSQL 17 重启持久性 CI；移除只适用于 Vercel 部署的 Analytics 注入，避免自托管环境请求不存在的 `/_vercel/insights/script.js`。
 - 增加 Collector 进程重启、PostgreSQL backend 断连恢复、过期 Processor Lease 回收等故障验证。
 - 生产预检发现 OMC 与 Keeper 使用 CPA `SUBSCRIBE usage`；CPA 在有订阅者时不写 FIFO 队列。保持现有服务不动，明确切换前必须停止/禁用旧订阅者。
 - 将 CPA Usage Queue retention 从 300 秒通过 Management API v8 热更新至上限 3,600 秒，并备份修改前配置；尚未启用 Monitor 生产 Collector。
