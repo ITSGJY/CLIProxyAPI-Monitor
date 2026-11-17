@@ -59,18 +59,15 @@ DECLARE
   new_valid_from timestamptz;
 BEGIN
   IF TG_OP = 'INSERT' THEN
-    -- INSERT ... ON CONFLICT DO UPDATE runs the BEFORE INSERT trigger before
-    -- the BEFORE UPDATE trigger. Reuse the current version for a no-op upsert.
-    SELECT price_version_id, input_price_per_1m, cached_input_price_per_1m, output_price_per_1m
-    INTO existing_version_id, existing_input, existing_cached_input, existing_output
+    -- For INSERT ... ON CONFLICT DO UPDATE, defer version creation to the
+    -- BEFORE UPDATE trigger. This avoids creating a version twice because
+    -- PostgreSQL invokes BEFORE INSERT before resolving the conflict.
+    SELECT price_version_id
+    INTO existing_version_id
     FROM model_prices
     WHERE model = NEW.model;
 
-    IF FOUND
-       AND existing_input IS NOT DISTINCT FROM NEW.input_price_per_1m
-       AND existing_cached_input IS NOT DISTINCT FROM NEW.cached_input_price_per_1m
-       AND existing_output IS NOT DISTINCT FROM NEW.output_price_per_1m
-       AND existing_version_id IS NOT NULL THEN
+    IF FOUND THEN
       NEW.price_version_id := existing_version_id;
       should_version := false;
     ELSE
@@ -82,21 +79,6 @@ BEGIN
       OR OLD.input_price_per_1m IS DISTINCT FROM NEW.input_price_per_1m
       OR OLD.cached_input_price_per_1m IS DISTINCT FROM NEW.cached_input_price_per_1m
       OR OLD.output_price_per_1m IS DISTINCT FROM NEW.output_price_per_1m;
-
-    -- An upsert's BEFORE INSERT trigger may already have created the matching
-    -- new version. Do not create a second version in the following UPDATE trigger.
-    IF should_version AND NEW.price_version_id IS NOT NULL AND EXISTS (
-      SELECT 1
-      FROM model_price_versions
-      WHERE id = NEW.price_version_id
-        AND model = NEW.model
-        AND input_price_per_1m IS NOT DISTINCT FROM NEW.input_price_per_1m
-        AND cached_input_price_per_1m IS NOT DISTINCT FROM NEW.cached_input_price_per_1m
-        AND output_price_per_1m IS NOT DISTINCT FROM NEW.output_price_per_1m
-        AND valid_to IS NULL
-    ) THEN
-      should_version := false;
-    END IF;
   END IF;
 
   IF should_version THEN
