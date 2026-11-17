@@ -506,6 +506,16 @@ export default function ExplorePage() {
   const [nameInput, setNameInput] = useState("");
   const [appliedRoute, setAppliedRoute] = useState("");
   const [appliedName, setAppliedName] = useState("");
+  const [modelFilter, setModelFilter] = useState("");
+  const [providerFilter, setProviderFilter] = useState("");
+  const [serviceTierFilter, setServiceTierFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [currencyFilter, setCurrencyFilter] = useState("");
+  const [appliedModelFilter, setAppliedModelFilter] = useState("");
+  const [appliedProviderFilter, setAppliedProviderFilter] = useState("");
+  const [appliedServiceTierFilter, setAppliedServiceTierFilter] = useState("");
+  const [appliedStatusFilter, setAppliedStatusFilter] = useState("");
+  const [appliedCurrencyFilter, setAppliedCurrencyFilter] = useState("");
   
   // 堆叠面积图开关
   const [showStackedArea, setShowStackedArea] = useState(true);
@@ -1264,6 +1274,11 @@ export default function ExplorePage() {
         }
         if (appliedRoute) params.set("route", appliedRoute);
         if (appliedName) params.set("name", appliedName);
+        if (appliedModelFilter) params.set("model", appliedModelFilter);
+        if (appliedProviderFilter) params.set("provider", appliedProviderFilter);
+        if (appliedServiceTierFilter) params.set("serviceTier", appliedServiceTierFilter);
+        if (appliedStatusFilter) params.set("status", appliedStatusFilter);
+        if (appliedCurrencyFilter) params.set("currency", appliedCurrencyFilter);
         if (!filterInvalidPoints) params.set("filterInvalid", "0");
 
         const res = await fetch(`/api/explore?${params.toString()}`, { cache: "no-store" });
@@ -1297,7 +1312,7 @@ export default function ExplorePage() {
     return () => {
       cancelled = true;
     };
-  }, [rangeMode, customStart, customEnd, rangeDays, appliedRoute, appliedName, filterInvalidPoints]);
+  }, [rangeMode, customStart, customEnd, rangeDays, appliedRoute, appliedName, appliedModelFilter, appliedProviderFilter, appliedServiceTierFilter, appliedStatusFilter, appliedCurrencyFilter, filterInvalidPoints]);
 
   const models = useMemo(() => {
     const set = new Set<string>();
@@ -1609,13 +1624,28 @@ export default function ExplorePage() {
   const applyExploreFilters = useCallback(() => {
     setAppliedRoute(routeInput.trim());
     setAppliedName(nameInput.trim());
-  }, [routeInput, nameInput]);
+    setAppliedModelFilter(modelFilter.trim());
+    setAppliedProviderFilter(providerFilter.trim());
+    setAppliedServiceTierFilter(serviceTierFilter.trim());
+    setAppliedStatusFilter(statusFilter);
+    setAppliedCurrencyFilter(currencyFilter.trim().toUpperCase());
+  }, [routeInput, nameInput, modelFilter, providerFilter, serviceTierFilter, statusFilter, currencyFilter]);
 
   const clearExploreFilters = useCallback(() => {
     setRouteInput("");
     setNameInput("");
     setAppliedRoute("");
     setAppliedName("");
+    setModelFilter("");
+    setProviderFilter("");
+    setServiceTierFilter("");
+    setStatusFilter("");
+    setCurrencyFilter("");
+    setAppliedModelFilter("");
+    setAppliedProviderFilter("");
+    setAppliedServiceTierFilter("");
+    setAppliedStatusFilter("");
+    setAppliedCurrencyFilter("");
   }, []);
 
     return (
@@ -1792,6 +1822,11 @@ export default function ExplorePage() {
                   setAppliedName("");
                 }}
               />
+              <input value={modelFilter} onChange={(event) => setModelFilter(event.target.value)} placeholder="模型" className="w-32 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200" />
+              <input value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)} placeholder="Provider" className="w-28 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200" />
+              <input value={serviceTierFilter} onChange={(event) => setServiceTierFilter(event.target.value)} placeholder="Service Tier" className="w-32 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200" />
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200"><option value="">全部状态</option><option value="success">成功</option><option value="error">失败</option></select>
+              <input value={currencyFilter} onChange={(event) => setCurrencyFilter(event.target.value)} placeholder="币种" className="w-20 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200" />
               <button
                 type="button"
                 onClick={applyExploreFilters}

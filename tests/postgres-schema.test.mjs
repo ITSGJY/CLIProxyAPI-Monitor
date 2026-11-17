@@ -49,7 +49,8 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
         "0002_add_source_to_usage_records.sql",
         "0003_add_auth_index_to_usage_records.sql",
         "0004_add_auth_file_mappings.sql",
-        "0005_usage_pipeline.sql"
+        "0005_usage_pipeline.sql",
+        "0006_phase5_dashboard_rollup_dimensions.sql"
       ];
       for (const migration of migrations) {
         const sql = await readFile(new URL("../drizzle/" + migration, import.meta.url), "utf8");
@@ -151,6 +152,8 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
       timestamp: eventTimestamp,
       provider: "openai",
       endpoint: "/v1/responses",
+      service_tier: "priority",
+      api_group_key: "test-group",
       model: "gpt-test",
       request_id: "phase1-request-001",
       api_key: "sk-test-secret-123456789",
@@ -244,6 +247,10 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     assert.equal(pricedEvent.rows[0].cost_currency, "USD");
     assert.equal(pricedEvent.rows[0].pricing_status, "priced");
     assert.equal(Number(pricedEvent.rows[0].price_version_id), Number(initialPrice.rows[0].price_version_id));
+    await scopedPool.query(
+      "UPDATE usage_events SET cache_creation_tokens = 5 WHERE request_id IN ($1, $2)",
+      ["phase1-request-001", "phase1-request-002"]
+    );
 
     const storedApiKey = await scopedPool.query(
       "SELECT api_key_mask, raw_payload->>'api_key' AS raw_payload_api_key FROM usage_events WHERE request_id = $1",
@@ -369,7 +376,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     assert.equal(rollups.hourly.skipped, false);
     assert.equal(rollups.daily.skipped, false);
     const hourlyRollup = await scopedPool.query(
-      "SELECT request_count, input_tokens, output_tokens, total_tokens, cost_nanos, pricing_status FROM usage_rollups_hourly WHERE model = 'gpt-test' AND timezone = 'UTC'"
+      "SELECT request_count, input_tokens, output_tokens, total_tokens, cache_creation_tokens, cost_nanos, pricing_status, api_key_mask, service_tier, priced_request_count, unpriced_request_count FROM usage_rollups_hourly WHERE model = 'gpt-test' AND timezone = 'UTC'"
     );
     assert.ok(hourlyRollup.rowCount >= 1);
     assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.request_count), 0), 3);
@@ -378,6 +385,11 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.total_tokens), 0), 390);
     assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.cost_nanos), 0), 460000);
     assert.ok(hourlyRollup.rows.every((row) => row.pricing_status === "priced"));
+    assert.ok(hourlyRollup.rows.every((row) => row.api_key_mask === "****6789"));
+    assert.ok(hourlyRollup.rows.every((row) => row.service_tier === "priority"));
+    assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.cache_creation_tokens), 0), 10);
+    assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.priced_request_count), 0), 3);
+    assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.unpriced_request_count), 0), 0);
     const dailyRollup = await scopedPool.query(
       "SELECT request_count, cost_nanos FROM usage_rollups_daily WHERE model = 'gpt-test' AND timezone = 'UTC'"
     );
@@ -414,6 +426,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
       batchSize: 10
     });
     assert.equal(lateProcess.processed, 1);
+    await scopedPool.query("UPDATE usage_events SET cache_creation_tokens = 5 WHERE request_id = $1", ["phase4-late-arrival"]);
     await refreshUsageRollups(scopedPool, { timezone: "UTC", hourlyLookbackHours: 48, dailyLookbackDays: 90 });
     const afterLateArrival = await scopedPool.query(
       "SELECT sum(request_count) AS requests, sum(cost_nanos) AS cost, min(pricing_status) AS min_pricing, max(pricing_status) AS max_pricing FROM usage_rollups_daily WHERE model = 'gpt-test' AND timezone = 'UTC'"
@@ -421,6 +434,11 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     assert.equal(Number(afterLateArrival.rows[0].requests), 4, "late-arriving event must be included in the rebuilt daily window");
     assert.equal(Number(afterLateArrival.rows[0].cost), 460000, "unpriced late event must not invent cost");
     assert.equal(afterLateArrival.rows[0].max_pricing, "partial");
+    const coverageRollup = await scopedPool.query(
+      "SELECT sum(priced_request_count) AS priced, sum(unpriced_request_count) AS unpriced FROM usage_rollups_daily WHERE model = 'gpt-test' AND timezone = 'UTC'"
+    );
+    assert.equal(Number(coverageRollup.rows[0].priced), 3);
+    assert.equal(Number(coverageRollup.rows[0].unpriced), 1);
 
     await refreshUsageRollups(scopedPool, { timezone: "UTC", hourlyLookbackHours: 48, dailyLookbackDays: 90 });
     const idempotentRollup = await scopedPool.query(

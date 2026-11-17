@@ -10,6 +10,7 @@ const links = [
   { href: "/", label: "仪表盘", icon: BarChart3 },
   { href: "/explore", label: "数据探索", icon: Activity },
   { href: "/records", label: "调用记录", icon: Table },
+  { href: "/collector", label: "采集状态", icon: Activity },
   { href: "/logs", label: "日志", icon: FileText }
 ];
 

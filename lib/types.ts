@@ -11,7 +11,7 @@ export type ModelUsage = {
   tokens: number;
   inputTokens: number;
   outputTokens: number;
-  cost: number;
+  cost: number | null;
 };
 
 export type UsageSeriesPoint = {
@@ -37,7 +37,7 @@ export type UsageOverview = {
   successCount: number;
   failureCount: number;
   successRate: number;
-  totalCost: number;
+  totalCost: number | null;
   models: ModelUsage[];
   byDay: UsageSeriesPoint[];
   byHour: UsageSeriesPoint[];

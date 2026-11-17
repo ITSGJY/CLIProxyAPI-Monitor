@@ -13,7 +13,7 @@ const EXPLORE_CACHE_TTL_MS = 30_000;
 const EXPLORE_CACHE_MAX_ENTRIES = 100;
 const exploreCache = new Map<string, CachedExplore>();
 
-function makeCacheKey(input: { days?: number; maxPoints?: number; start?: string | null; end?: string | null; route?: string | null; name?: string | null; filterInvalid?: boolean }) {
+function makeCacheKey(input: { days?: number; maxPoints?: number; start?: string | null; end?: string | null; route?: string | null; name?: string | null; filterInvalid?: boolean; model?: string | null; provider?: string | null; serviceTier?: string | null; status?: string | null; currency?: string | null }) {
   return JSON.stringify({
     days: input.days ?? null,
     maxPoints: input.maxPoints ?? null,
@@ -21,7 +21,12 @@ function makeCacheKey(input: { days?: number; maxPoints?: number; start?: string
     end: input.end ?? null,
     route: input.route ?? null,
     name: input.name ?? null,
-    filterInvalid: input.filterInvalid ?? true
+    filterInvalid: input.filterInvalid ?? true,
+    model: input.model ?? null,
+    provider: input.provider ?? null,
+    serviceTier: input.serviceTier ?? null,
+    status: input.status ?? null,
+    currency: input.currency ?? null
   });
 }
 
@@ -58,18 +63,25 @@ export async function GET(request: Request) {
     const end = searchParams.get("end");
     const route = searchParams.get("route");
     const name = searchParams.get("name");
+    const model = searchParams.get("model");
+    const provider = searchParams.get("provider");
+    const serviceTier = searchParams.get("serviceTier");
+    const statusParam = searchParams.get("status");
+    if (statusParam && statusParam !== "success" && statusParam !== "error") return NextResponse.json({ error: "Invalid status filter" }, { status: 400 });
+    const status = statusParam as "success" | "error" | null;
+    const currency = searchParams.get("currency");
 
     const days = daysParam ? Number.parseInt(daysParam, 10) : undefined;
     const maxPoints = maxPointsParam ? Number.parseInt(maxPointsParam, 10) : undefined;
     const filterInvalid = searchParams.get("filterInvalid") !== "0";
 
-    const cacheKey = makeCacheKey({ days, maxPoints, start, end, route, name, filterInvalid });
+    const cacheKey = makeCacheKey({ days, maxPoints, start, end, route, name, filterInvalid, model, provider, serviceTier, status, currency });
     const cached = getCached(cacheKey);
     if (cached) {
       return NextResponse.json(cached, { status: 200 });
     }
 
-    const payload = await getExplorePoints(days, { maxPoints, start, end, route, name, filterInvalid });
+    const payload = await getExplorePoints(days, { maxPoints, start, end, route, name, model, provider, serviceTier, status, currency, filterInvalid });
     setCached(cacheKey, payload);
     return NextResponse.json(payload, { status: 200 });
   } catch (error) {

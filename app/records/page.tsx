@@ -30,7 +30,15 @@ type UsageRecord = {
   reasoningTokens: number;
   cachedTokens: number;
   isError: boolean;
-  cost: number;
+  cost: number | null;
+  costNanos: number | null;
+  costCurrency: string;
+  pricingStatus: string;
+  cacheCreationTokens: number;
+  latencyMs: number | null;
+  ttftMs: number | null;
+  serviceTier: string | null;
+  endpoint: string | null;
 };
 
 type RecordsResponse = {
@@ -301,6 +309,10 @@ export default function RecordsPage() {
   const [modelInput, setModelInput] = useState("");
   const [routeInput, setRouteInput] = useState("");
   const [sourceInput, setSourceInput] = useState("");
+  const [providerInput, setProviderInput] = useState("");
+  const [serviceTierInput, setServiceTierInput] = useState("");
+  const [statusInput, setStatusInput] = useState("");
+  const [currencyInput, setCurrencyInput] = useState("");
   const [startInput, setStartInput] = useState("");
   const [endInput, setEndInput] = useState("");
   const [rangePickerOpen, setRangePickerOpen] = useState(false);
@@ -313,6 +325,10 @@ export default function RecordsPage() {
   const [appliedModel, setAppliedModel] = useState<string>("");
   const [appliedRoute, setAppliedRoute] = useState<string>("");
   const [appliedSource, setAppliedSource] = useState<string>("");
+  const [appliedProvider, setAppliedProvider] = useState<string>("");
+  const [appliedServiceTier, setAppliedServiceTier] = useState<string>("");
+  const [appliedStatus, setAppliedStatus] = useState<string>("");
+  const [appliedCurrency, setAppliedCurrency] = useState<string>("");
   const [appliedStart, setAppliedStart] = useState<string>("");
   const [appliedEnd, setAppliedEnd] = useState<string>("");
 
@@ -522,12 +538,16 @@ export default function RecordsPage() {
       if (appliedModel) params.set("model", appliedModel);
       if (appliedRoute) params.set("route", appliedRoute);
       if (appliedSource) params.set("source", appliedSource);
+      if (appliedProvider) params.set("provider", appliedProvider);
+      if (appliedServiceTier) params.set("serviceTier", appliedServiceTier);
+      if (appliedStatus) params.set("status", appliedStatus);
+      if (appliedCurrency) params.set("currency", appliedCurrency);
       if (appliedStart) params.set("start", new Date(appliedStart).toISOString());
       if (appliedEnd) params.set("end", new Date(appliedEnd).toISOString());
       if (includeFilters) params.set("includeFilters", "1");
       return params;
     },
-    [sortKeys, appliedModel, appliedRoute, appliedSource, appliedStart, appliedEnd]
+    [sortKeys, appliedModel, appliedRoute, appliedSource, appliedProvider, appliedServiceTier, appliedStatus, appliedCurrency, appliedStart, appliedEnd]
   );
 
   const fetchRecords = useCallback(
@@ -718,6 +738,10 @@ export default function RecordsPage() {
     setAppliedModel(nextModel);
     setAppliedRoute(nextRoute);
     setAppliedSource(nextSource);
+    setAppliedProvider(providerInput.trim());
+    setAppliedServiceTier(serviceTierInput.trim());
+    setAppliedStatus(statusInput);
+    setAppliedCurrency(currencyInput.trim().toUpperCase());
     setAppliedStart(nextStart);
     setAppliedEnd(nextEnd);
   };
@@ -739,7 +763,7 @@ export default function RecordsPage() {
 
   useEffect(() => {
     resetAndFetch(false);
-  }, [appliedModel, appliedRoute, appliedSource, appliedStart, appliedEnd, resetAndFetch]);
+  }, [appliedModel, appliedRoute, appliedSource, appliedProvider, appliedServiceTier, appliedStatus, appliedCurrency, appliedStart, appliedEnd, resetAndFetch]);
 
   const costTone = useCallback((cost: number) => {
     if (cost >= 5) return "bg-red-500/20 text-red-300 ring-1 ring-red-500/40";
@@ -861,8 +885,8 @@ export default function RecordsPage() {
           return <span style={{ color: TOKEN_COLORS.cached }}>{formatNumberWithCommas(row.cachedTokens)}</span>;
         case "cost":
           return (
-            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${costTone(row.cost)}`}>
-              {formatCost(row.cost)}
+            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${costTone(row.cost ?? 0)}`}>
+              {row.cost === null ? "未定价" : `${formatCost(row.cost)} ${row.costCurrency}`}
             </span>
           );
         case "isError":
@@ -1078,6 +1102,10 @@ export default function RecordsPage() {
             }}
           />
 
+          <input value={providerInput} onChange={(event) => setProviderInput(event.target.value)} placeholder="Provider" className="w-28 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200" />
+          <input value={serviceTierInput} onChange={(event) => setServiceTierInput(event.target.value)} placeholder="Service Tier" className="w-32 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200" />
+          <select value={statusInput} onChange={(event) => setStatusInput(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200"><option value="">全部状态</option><option value="success">成功</option><option value="error">失败</option></select>
+          <input value={currencyInput} onChange={(event) => setCurrencyInput(event.target.value)} placeholder="币种" className="w-20 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200" />
           <div className="relative" ref={rangePickerRef}>
             <button
               type="button"

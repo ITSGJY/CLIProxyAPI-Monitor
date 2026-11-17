@@ -341,6 +341,11 @@ function createRollupColumns() {
     model: text("model").notNull(),
     source: text("source").notNull().default(""),
     apiGroupKey: text("api_group_key").notNull().default(""),
+    apiKeyMask: text("api_key_mask").notNull().default(""),
+    serviceTier: text("service_tier").notNull().default(""),
+    cacheCreationTokens: bigint("cache_creation_tokens", { mode: "number" }).notNull().default(0),
+    pricedRequestCount: bigint("priced_request_count", { mode: "number" }).notNull().default(0),
+    unpricedRequestCount: bigint("unpriced_request_count", { mode: "number" }).notNull().default(0),
     requestCount: bigint("request_count", { mode: "number" }).notNull().default(0),
     errorCount: bigint("error_count", { mode: "number" }).notNull().default(0),
     inputTokens: bigint("input_tokens", { mode: "number" }).notNull().default(0),
@@ -362,7 +367,7 @@ export const usageRollupsHourly = pgTable(
     ...createRollupColumns()
   },
   (table) => ({
-    pk: primaryKey({ columns: [table.bucketStart, table.timezone, table.provider, table.model, table.source, table.apiGroupKey, table.costCurrency], name: "usage_rollups_hourly_pkey" })
+    pk: primaryKey({ columns: [table.bucketStart, table.timezone, table.provider, table.model, table.source, table.apiGroupKey, table.apiKeyMask, table.serviceTier, table.costCurrency], name: "usage_rollups_hourly_pkey" })
   })
 );
 
@@ -373,6 +378,6 @@ export const usageRollupsDaily = pgTable(
     ...createRollupColumns()
   },
   (table) => ({
-    pk: primaryKey({ columns: [table.bucketStart, table.timezone, table.provider, table.model, table.source, table.apiGroupKey, table.costCurrency], name: "usage_rollups_daily_pkey" })
+    pk: primaryKey({ columns: [table.bucketStart, table.timezone, table.provider, table.model, table.source, table.apiGroupKey, table.apiKeyMask, table.serviceTier, table.costCurrency], name: "usage_rollups_daily_pkey" })
   })
 );

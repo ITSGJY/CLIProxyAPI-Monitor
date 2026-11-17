@@ -1,383 +1,84 @@
 import * as DrizzleOrm from "drizzle-orm";
-const { and, eq, sql, gte, lte, desc } = DrizzleOrm as any;
 import { db } from "@/lib/db/client";
-import { authFileMappings, modelPrices, usageRecords } from "@/lib/db/schema";
+import { usageEvents, usageRollupsDaily, usageRollupCheckpoints } from "@/lib/db/schema";
 import type { UsageOverview, ModelUsage, UsageSeriesPoint } from "@/lib/types";
-import { estimateCost, priceMap } from "@/lib/usage";
+import { dashboardWhere, getDashboardFilterOptions, toCount, type DashboardFilters } from "./dashboard-common";
 
-type PriceRow = typeof modelPrices.$inferSelect;
-type ModelAggRow = {
-  model: string;
-  requests: number;
-  tokens: number;
-  inputTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  cachedTokens: number;
-};
-type TotalsRow = {
-  totalRequests: number;
-  totalTokens: number;
-  inputTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  cachedTokens: number;
-  successCount: number;
-  failureCount: number;
-};
-type DayAggRow = { label: string; requests: number; errors: number; tokens: number };
-type DayModelAggRow = { label: string; model: string; inputTokens: number; outputTokens: number; reasoningTokens: number; cachedTokens: number };
-type HourAggRow = { 
-  label: string;
-  hourStart: Date | string;
-  requests: number; 
-  tokens: number;
-  inputTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  cachedTokens: number;
-};
+const { and, desc, eq, gte, lt, sql } = DrizzleOrm as any;
 type OverviewMeta = { page: number; pageSize: number; totalModels: number; totalPages: number };
 
-function toNumber(value: unknown): number {
-  const num = Number(value ?? 0);
-  return Number.isFinite(num) ? num : 0;
+function isLocalDayBoundary(value: Date, timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(value);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return values.hour === "00" && values.minute === "00" && values.second === "00" && value.getUTCMilliseconds() === 0;
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-function normalizeDays(days?: number | null) {
-  const fallback = 14;
-  if (days == null || Number.isNaN(days)) return fallback;
-  return Math.min(Math.max(Math.floor(days), 1), 90);
+function normalizeRange(days?: number, start?: string | null, end?: string | null) {
+  const endDate = end ? new Date(end) : new Date();
+  if (end && /^\d{4}-\d{2}-\d{2}$/.test(end)) endDate.setUTCDate(endDate.getUTCDate() + 1);
+  const startDate = start ? new Date(start) : new Date(endDate.getTime() - Math.min(Math.max(days ?? 14, 1), 366) * 86400000);
+  if (!Number.isFinite(startDate.getTime()) || !Number.isFinite(endDate.getTime()) || startDate >= endDate) throw new RangeError("Invalid Overview time range");
+  return { start: startDate, end: endDate, days: Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000)) };
 }
 
-function parseDateInput(value?: string | Date | null) {
-  if (!value) return null;
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isFinite(date.getTime()) ? date : null;
-}
-
-function withDayStart(date: Date) {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function withDayEnd(date: Date) {
-  const d = new Date(date);
-  d.setHours(23, 59, 59, 999);
-  return d;
-}
-
-function normalizePage(value?: number | null) {
-  const fallback = 1;
-  if (value == null || Number.isNaN(value)) return fallback;
-  return Math.max(1, Math.floor(value));
-}
-
-function normalizePageSize(value?: number | null) {
-  const fallback = 10;
-  if (value == null || Number.isNaN(value)) return fallback;
-  return Math.min(Math.max(Math.floor(value), 5), 500);
-}
-
-export async function getOverview(
-  daysInput?: number,
-  opts?: { model?: string | null; route?: string | null; source?: string | null; name?: string | null; page?: number | null; pageSize?: number | null; start?: string | Date | null; end?: string | Date | null; timezone?: string | null }
-): Promise<{ overview: UsageOverview; empty: boolean; days: number; meta: OverviewMeta; filters: { models: string[]; routes: string[]; sources: string[]; names: string[] }; timezone: string; lastSyncAt: string | null }> {
-  const startDate = parseDateInput(opts?.start);
-  const endDate = parseDateInput(opts?.end);
-  const hasCustomRange = startDate && endDate && endDate >= startDate;
-
-  const days = hasCustomRange ? Math.max(1, Math.round((withDayEnd(endDate).getTime() - withDayStart(startDate).getTime()) / DAY_MS) + 1) : normalizeDays(daysInput);
-  const page = normalizePage(opts?.page ?? undefined);
-  const pageSize = normalizePageSize(opts?.pageSize ?? undefined);
-  const offset = (page - 1) * pageSize;
-  const since = hasCustomRange ? withDayStart(startDate!) : new Date(Date.now() - days * DAY_MS);
-  const until = hasCustomRange ? withDayEnd(endDate!) : undefined;
-
-  const baseWhereParts: any[] = [gte(usageRecords.occurredAt, since)];
-  if (until) baseWhereParts.push(lte(usageRecords.occurredAt, until));
-  const baseWhere = baseWhereParts.length ? and(...baseWhereParts) : undefined;
-
-  const filterWhereParts: any[] = [...baseWhereParts];
-  if (opts?.model) filterWhereParts.push(eq(usageRecords.model, opts.model));
-  if (opts?.route) filterWhereParts.push(eq(usageRecords.route, opts.route));
-  if (opts?.source) filterWhereParts.push(eq(usageRecords.source, opts.source));
-  if (opts?.name) {
-    filterWhereParts.push(
-      sql`coalesce(
-        nullif((select af.name from auth_file_mappings af where af.auth_id = ${usageRecords.authIndex} limit 1), ''),
-        nullif(${usageRecords.source}, ''),
-        '-'
-      ) = ${opts.name}`
-    );
-  }
-  const filterWhere = filterWhereParts.length ? and(...filterWhereParts) : undefined;
-
-  const tz = opts?.timezone || "Asia/Shanghai";
-  // Use sql.raw() so the timezone is embedded as a SQL literal rather than a query
-  // parameter. PostgreSQL requires the GROUP BY expression to be textually identical
-  // to the SELECT expression; different parameter indices ($1 vs $3) would cause a
-  // "must appear in GROUP BY" error even when the values are equal.
-  const tzLiteral = sql.raw(`'${tz}'`);
-  const dayExpr = sql`date_trunc('day', ${usageRecords.occurredAt} at time zone ${tzLiteral})`;
-  const hourExpr = sql`date_trunc('hour', ${usageRecords.occurredAt} at time zone ${tzLiteral})`;
-  const credentialNameExpr = sql<string>`coalesce(nullif(${authFileMappings.name}, ''), nullif(${usageRecords.source}, ''), '-')`;
-
-  const totalsPromise: Promise<TotalsRow[]> = db
-    .select({
-      totalRequests: sql<number>`count(*)`,
-      totalTokens: sql<number>`coalesce(sum(${usageRecords.totalTokens}), 0)`,
-      inputTokens: sql<number>`coalesce(sum(${usageRecords.inputTokens}), 0)`,
-      outputTokens: sql<number>`coalesce(sum(${usageRecords.outputTokens}), 0)`,
-      reasoningTokens: sql<number>`coalesce(sum(${usageRecords.reasoningTokens}), 0)`,
-      cachedTokens: sql<number>`coalesce(sum(${usageRecords.cachedTokens}), 0)`,
-      successCount: sql<number>`coalesce(sum(case when ${usageRecords.isError} then 0 else 1 end), 0)`,
-      failureCount: sql<number>`coalesce(sum(case when ${usageRecords.isError} then 1 else 0 end), 0)`
-    })
-    .from(usageRecords)
-    .where(filterWhere);
-
-  const pricePromise: Promise<PriceRow[]> = db.select().from(modelPrices);
-
-  const totalModelsPromise: Promise<{ count: number }[]> = db
-    .select({ count: sql<number>`count(distinct ${usageRecords.model})` })
-    .from(usageRecords)
-    .where(filterWhere);
-
-  const byModelPromise: Promise<ModelAggRow[]> = db
-    .select({
-      model: usageRecords.model,
-      requests: sql<number>`count(*)`,
-      tokens: sql<number>`sum(${usageRecords.totalTokens})`,
-      inputTokens: sql<number>`sum(${usageRecords.inputTokens})`,
-      outputTokens: sql<number>`sum(${usageRecords.outputTokens})`,
-      reasoningTokens: sql<number>`coalesce(sum(${usageRecords.reasoningTokens}), 0)`,
-      cachedTokens: sql<number>`coalesce(sum(${usageRecords.cachedTokens}), 0)`
-    })
-    .from(usageRecords)
-    .where(filterWhere)
-    .groupBy(usageRecords.model)
-    .orderBy(usageRecords.model)
-    .limit(pageSize)
-    .offset(offset);
-
-  const byDayPromise: Promise<DayAggRow[]> = db
-    .select({
-      label: sql<string>`to_char(${dayExpr}, 'YYYY-MM-DD')`,
-      requests: sql<number>`count(*)`,
-      errors: sql<number>`coalesce(sum(case when ${usageRecords.isError} then 1 else 0 end), 0)`,
-      tokens: sql<number>`sum(${usageRecords.totalTokens})`
-    })
-    .from(usageRecords)
-    .where(filterWhere)
-    .groupBy(dayExpr)
-    .orderBy(desc(dayExpr))
-    .limit(days);
-
-  const byDayModelPromise: Promise<DayModelAggRow[]> = db
-    .select({
-      label: sql<string>`to_char(${dayExpr}, 'YYYY-MM-DD')`,
-      model: usageRecords.model,
-      inputTokens: sql<number>`sum(${usageRecords.inputTokens})`,
-      outputTokens: sql<number>`sum(${usageRecords.outputTokens})`,
-      reasoningTokens: sql<number>`coalesce(sum(${usageRecords.reasoningTokens}), 0)`,
-      cachedTokens: sql<number>`coalesce(sum(${usageRecords.cachedTokens}), 0)`
-    })
-    .from(usageRecords)
-    .where(filterWhere)
-    .groupBy(dayExpr, usageRecords.model)
-    .orderBy(dayExpr, usageRecords.model);
-
-  const byHourPromise: Promise<HourAggRow[]> = db
-    .select({
-      label: sql<string>`to_char(${hourExpr}, 'MM-DD HH24')`,
-      hourStart: sql<Date>`(${hourExpr}) at time zone ${tzLiteral}`,
-      requests: sql<number>`count(*)`,
-      tokens: sql<number>`sum(${usageRecords.totalTokens})`,
-      inputTokens: sql<number>`sum(${usageRecords.inputTokens})`,
-      outputTokens: sql<number>`sum(${usageRecords.outputTokens})`,
-      reasoningTokens: sql<number>`coalesce(sum(${usageRecords.reasoningTokens}), 0)`,
-      cachedTokens: sql<number>`coalesce(sum(${usageRecords.cachedTokens}), 0)`
-    })
-    .from(usageRecords)
-    .where(filterWhere)
-    .groupBy(hourExpr)
-    .orderBy(hourExpr);
-
-  const availableModelsPromise: Promise<{ model: string }[]> = db
-    .select({ model: usageRecords.model })
-    .from(usageRecords)
-    .where(baseWhere)
-    .groupBy(usageRecords.model)
-    .orderBy(usageRecords.model);
-
-  const availableRoutesPromise: Promise<{ route: string }[]> = db
-    .select({ route: usageRecords.route })
-    .from(usageRecords)
-    .where(baseWhere)
-    .groupBy(usageRecords.route)
-    .orderBy(usageRecords.route);
-
-  const availableSourcesPromise: Promise<{ source: string }[]> = db
-    .select({ source: usageRecords.source })
-    .from(usageRecords)
-    .where(baseWhere)
-    .groupBy(usageRecords.source)
-    .orderBy(usageRecords.source);
-
-  const availableNamesPromise: Promise<{ name: string | null }[]> = db
-    .select({ name: credentialNameExpr })
-    .from(usageRecords)
-    .leftJoin(authFileMappings, eq(usageRecords.authIndex, authFileMappings.authId))
-    .where(baseWhere)
-    .groupBy(credentialNameExpr)
-    .orderBy(credentialNameExpr);
-
-  const lastSyncAtPromise: Promise<{ v: Date | null }[]> = db
-    .select({ v: sql<Date | null>`max(${usageRecords.syncedAt})` })
-    .from(usageRecords);
-
-  const [
-    totalsRowResult,
-    priceRows,
-    totalModelsRowResult,
-    byModelRows,
-    byDayRows,
-    byDayModelRows,
-    byHourRows,
-    availableModelsRows,
-    availableRoutesRows,
-    availableSourcesRows,
-    availableNamesRows,
-    lastSyncAtRows
-  ] = await Promise.all([
-    totalsPromise,
-    pricePromise,
-    totalModelsPromise,
-    byModelPromise,
-    byDayPromise,
-    byDayModelPromise,
-    byHourPromise,
-    availableModelsPromise,
-    availableRoutesPromise,
-    availableSourcesPromise,
-    availableNamesPromise,
-    lastSyncAtPromise
+export async function getOverview(daysInput?: number, opts?: DashboardFilters & {
+  page?: number | null; pageSize?: number | null; timezone?: string | null;
+}): Promise<{ overview: UsageOverview; empty: boolean; days: number; meta: OverviewMeta; filters: { models: string[]; routes: string[]; sources: string[]; names: string[]; providers?: string[]; serviceTiers?: string[] }; timezone: string; lastSyncAt: string | null; costByCurrency: Array<{currency:string; costNanos:number | null}>; pricingCoverage: {priced:number;unpriced:number;partial:number;rate:number} }> {
+  const range = normalizeRange(daysInput, opts?.start, opts?.end);
+  const timezone = opts?.timezone || "Asia/Shanghai";
+  try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }); } catch { throw new RangeError("Invalid timezone"); }
+  const page = Math.max(1, Math.floor(opts?.page ?? 1));
+  const pageSize = Math.min(500, Math.max(5, Math.floor(opts?.pageSize ?? 10)));
+  const filters = { ...opts, start: range.start.toISOString(), end: range.end.toISOString() };
+  const where = dashboardWhere(filters);
+  const timezoneLiteral = sql.raw(`'${timezone.replace(/'/g, "''")}'`);
+  const dayExpr = sql`date_trunc('day', ${usageEvents.occurredAt} AT TIME ZONE ${timezoneLiteral})`;
+  const hourExpr = sql`date_trunc('hour', ${usageEvents.occurredAt} AT TIME ZONE ${timezoneLiteral})`;
+  const dailyCheckpoint = range.days <= 90 && !opts?.name && !opts?.status
+    ? await db.select({ state: usageRollupCheckpoints.state, completedAt: usageRollupCheckpoints.completedAt }).from(usageRollupCheckpoints).where(and(eq(usageRollupCheckpoints.rollupName, "usage_daily"), eq(usageRollupCheckpoints.timezone, timezone))).limit(1)
+    : [];
+  const useDailyRollup = isLocalDayBoundary(range.start, timezone) && isLocalDayBoundary(range.end, timezone) && !opts?.source && dailyCheckpoint[0]?.state === "completed" && dailyCheckpoint[0]?.completedAt && Date.now() - new Date(dailyCheckpoint[0].completedAt).getTime() < 2 * 60 * 60 * 1000;
+  const rollupParts: any[] = [gte(usageRollupsDaily.bucketStart, range.start), lt(usageRollupsDaily.bucketStart, range.end), eq(usageRollupsDaily.timezone, timezone)];
+  if (opts?.model) rollupParts.push(eq(usageRollupsDaily.model, opts.model));
+  if (opts?.route) rollupParts.push(eq(usageRollupsDaily.apiKeyMask, opts.route));
+  if (opts?.source) rollupParts.push(eq(usageRollupsDaily.source, opts.source));
+  if (opts?.provider) rollupParts.push(eq(usageRollupsDaily.provider, opts.provider));
+  if (opts?.serviceTier) rollupParts.push(eq(usageRollupsDaily.serviceTier, opts.serviceTier));
+  if (opts?.currency) rollupParts.push(eq(usageRollupsDaily.costCurrency, opts.currency));
+  const dayRowsPromise = useDailyRollup
+    ? db.select({ label: sql<string>`to_char(${usageRollupsDaily.bucketStart} AT TIME ZONE ${timezoneLiteral}, 'YYYY-MM-DD')`, requests: sql<number>`sum(${usageRollupsDaily.requestCount})`, errors: sql<number>`sum(${usageRollupsDaily.errorCount})`, tokens: sql<number>`sum(${usageRollupsDaily.totalTokens})` }).from(usageRollupsDaily).where(and(...rollupParts)).groupBy(usageRollupsDaily.bucketStart).orderBy(usageRollupsDaily.bucketStart).limit(366)
+    : db.select({ label: sql<string>`to_char(${dayExpr}, 'YYYY-MM-DD')`, requests: sql<number>`count(*)`, errors: sql<number>`count(*) FILTER (WHERE ${usageEvents.isError})`, tokens: sql<number>`sum(${usageEvents.totalTokens})` }).from(usageEvents).where(where).groupBy(dayExpr).orderBy(dayExpr).limit(366);
+  const [totalsRows, currencyRows, modelRows, dayRows, hourRows, modelCountRows, options, lastRows, pricedRows] = await Promise.all([
+    db.select({ requests: sql<number>`count(*)`, tokens: sql<number>`coalesce(sum(${usageEvents.totalTokens}),0)`, input: sql<number>`coalesce(sum(${usageEvents.inputTokens}),0)`, output: sql<number>`coalesce(sum(${usageEvents.outputTokens}),0)`, reasoning: sql<number>`coalesce(sum(${usageEvents.reasoningTokens}),0)`, cached: sql<number>`coalesce(sum(${usageEvents.cachedTokens}),0)`, success: sql<number>`count(*) FILTER (WHERE NOT ${usageEvents.isError})`, errors: sql<number>`count(*) FILTER (WHERE ${usageEvents.isError})` }).from(usageEvents).where(where),
+    db.select({ currency: usageEvents.costCurrency, costNanos: sql<number>`coalesce(sum(${usageEvents.costNanos}) FILTER (WHERE ${usageEvents.pricingStatus}='priced'),0)`, priced: sql<number>`count(*) FILTER (WHERE ${usageEvents.pricingStatus}='priced')`, unpriced: sql<number>`count(*) FILTER (WHERE ${usageEvents.pricingStatus}='unpriced')`, partial: sql<number>`count(*) FILTER (WHERE ${usageEvents.pricingStatus}='partial')` }).from(usageEvents).where(where).groupBy(usageEvents.costCurrency),
+    db.select({ model: usageEvents.model, requests: sql<number>`count(*)`, tokens: sql<number>`sum(${usageEvents.totalTokens})`, input: sql<number>`sum(${usageEvents.inputTokens})`, output: sql<number>`sum(${usageEvents.outputTokens})`, costNanos: sql<number>`sum(${usageEvents.costNanos}) FILTER (WHERE ${usageEvents.costCurrency} = 'USD' AND ${usageEvents.pricingStatus} = 'priced')`, priced: sql<number>`count(*) FILTER (WHERE ${usageEvents.pricingStatus}='priced' AND ${usageEvents.costCurrency}='USD')` }).from(usageEvents).where(where).groupBy(usageEvents.model).orderBy(desc(sql`sum(${usageEvents.totalTokens})`)).limit(pageSize).offset((page-1)*pageSize),
+    dayRowsPromise,
+    db.select({ label: sql<string>`to_char(${hourExpr}, 'MM-DD HH24')`, hourStart: sql<Date>`(${hourExpr}) AT TIME ZONE ${timezone}`, requests: sql<number>`count(*)`, tokens: sql<number>`sum(${usageEvents.totalTokens})`, input: sql<number>`sum(${usageEvents.inputTokens})`, output: sql<number>`sum(${usageEvents.outputTokens})`, reasoning: sql<number>`sum(${usageEvents.reasoningTokens})`, cached: sql<number>`sum(${usageEvents.cachedTokens})` }).from(usageEvents).where(where).groupBy(hourExpr).orderBy(hourExpr).limit(24*367),
+    db.select({ count: sql<number>`count(distinct ${usageEvents.model})` }).from(usageEvents).where(where),
+    getDashboardFilterOptions({ start: range.start.toISOString(), end: range.end.toISOString() }),
+    db.select({ last: sql<Date | null>`max(${usageEvents.ingestedAt})` }).from(usageEvents),
+    db.select({ priced: sql<number>`count(*) FILTER (WHERE ${usageEvents.pricingStatus}='priced')`, unpriced: sql<number>`count(*) FILTER (WHERE ${usageEvents.pricingStatus}='unpriced')`, partial: sql<number>`count(*) FILTER (WHERE ${usageEvents.pricingStatus}='partial')`, total: sql<number>`count(*)` }).from(usageEvents).where(where)
   ]);
-
-  const totalsRow =
-    totalsRowResult[0] ?? { totalRequests: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cachedTokens: 0, successCount: 0, failureCount: 0 };
-
-  const totalModelsRow = totalModelsRowResult[0] ?? { count: 0 };
-  const prices = priceMap(
-    priceRows.map((p: PriceRow) => ({
-      model: p.model,
-      inputPricePer1M: Number(p.inputPricePer1M),
-      cachedInputPricePer1M: Number(p.cachedInputPricePer1M),
-      outputPricePer1M: Number(p.outputPricePer1M)
-    }))
-  );
-
-  const models: ModelUsage[] = byModelRows.map((row) => {
-    const cost = estimateCost(
-      {
-        inputTokens: toNumber(row.inputTokens),
-        cachedTokens: toNumber(row.cachedTokens),
-        outputTokens: toNumber(row.outputTokens),
-        reasoningTokens: toNumber(row.reasoningTokens)
-      },
-      row.model,
-      prices
-    );
-    return {
-      model: row.model,
-      requests: toNumber(row.requests),
-      tokens: toNumber(row.tokens),
-      inputTokens: toNumber(row.inputTokens),
-      outputTokens: toNumber(row.outputTokens),
-      cost
-    };
-  });
-
-  const dailyCostMap = new Map<string, number>();
-  for (const row of byDayModelRows) {
-    const cost = estimateCost(
-      {
-        inputTokens: toNumber(row.inputTokens),
-        cachedTokens: toNumber(row.cachedTokens),
-        outputTokens: toNumber(row.outputTokens),
-        reasoningTokens: toNumber(row.reasoningTokens)
-      },
-      row.model,
-      prices
-    );
-    dailyCostMap.set(row.label, (dailyCostMap.get(row.label) ?? 0) + cost);
-  }
-
-  const byDay: UsageSeriesPoint[] = [...byDayRows].reverse().map((row) => ({
-    label: row.label,
-    requests: toNumber(row.requests),
-    errors: toNumber(row.errors),
-    tokens: toNumber(row.tokens),
-    cost: Number((dailyCostMap.get(row.label) ?? 0).toFixed(2))
-  }));
-
-  const byHour: UsageSeriesPoint[] = byHourRows.map((row) => ({
-    label: row.label,
-    timestamp: (() => {
-      const d = new Date(row.hourStart as string);
-      return Number.isFinite(d.getTime()) ? d.toISOString() : undefined;
-    })(),
-    requests: toNumber(row.requests),
-    tokens: toNumber(row.tokens),
-    inputTokens: toNumber(row.inputTokens),
-    outputTokens: toNumber(row.outputTokens),
-    reasoningTokens: toNumber(row.reasoningTokens),
-    cachedTokens: toNumber(row.cachedTokens)
-  }));
-
-  const totalCost = models.reduce((acc, cur) => acc + cur.cost, 0);
-  const totalRequests = toNumber(totalsRow.totalRequests);
-  const successCount = toNumber(totalsRow.successCount);
-  const failureCount = toNumber(totalsRow.failureCount);
-  const successRate = totalRequests === 0 ? 1 : successCount / totalRequests;
-
+  const total = totalsRows[0];
+  const costByCurrency = currencyRows.map((row: any) => ({ currency: row.currency, costNanos: toCount(row.priced) > 0 ? toCount(row.costNanos) : null }));
+  const usdRow = currencyRows.find((row: any) => row.currency === "USD");
+  const usdNanos = toCount(usdRow?.costNanos);
+  const models: ModelUsage[] = modelRows.map((row: any) => ({ model: row.model, requests: toCount(row.requests), tokens: toCount(row.tokens), inputTokens: toCount(row.input), outputTokens: toCount(row.output), cost: row.costNanos == null || row.priced === 0 ? null : toCount(row.costNanos) / 1e9 }));
+  const byDay: UsageSeriesPoint[] = dayRows.map((row: any) => ({ label: row.label, requests: toCount(row.requests), errors: toCount(row.errors), tokens: toCount(row.tokens) }));
+  const byHour: UsageSeriesPoint[] = hourRows.map((row: any) => ({ label: row.label, timestamp: new Date(row.hourStart).toISOString(), requests: toCount(row.requests), tokens: toCount(row.tokens), inputTokens: toCount(row.input), outputTokens: toCount(row.output), reasoningTokens: toCount(row.reasoning), cachedTokens: toCount(row.cached) }));
+  const requests = toCount(total?.requests);
+  const coverage = pricedRows[0];
+  const priced = toCount(coverage?.priced), unpriced = toCount(coverage?.unpriced), partial = toCount(coverage?.partial);
   const overview: UsageOverview = {
-    totalRequests,
-    totalTokens: toNumber(totalsRow.totalTokens),
-    totalInputTokens: toNumber(totalsRow.inputTokens),
-    totalOutputTokens: toNumber(totalsRow.outputTokens),
-    totalReasoningTokens: toNumber(totalsRow.reasoningTokens),
-    totalCachedTokens: toNumber(totalsRow.cachedTokens),
-    successCount,
-    failureCount,
-    successRate,
-    totalCost: Number(totalCost.toFixed(4)),
-    models,
-    byDay,
-    byHour
+    totalRequests: requests, totalTokens: toCount(total?.tokens), totalInputTokens: toCount(total?.input), totalOutputTokens: toCount(total?.output), totalReasoningTokens: toCount(total?.reasoning), totalCachedTokens: toCount(total?.cached), successCount: toCount(total?.success), failureCount: toCount(total?.errors), successRate: requests ? toCount(total?.success)/requests : 1,
+    totalCost: toCount(usdRow?.priced) > 0 ? usdNanos / 1e9 : null, models, byDay, byHour
   };
-
-  const totalModels = toNumber(totalModelsRow.count);
-  const totalPages = Math.max(1, Math.ceil(totalModels / pageSize));
-
-  const filters = {
-    models: availableModelsRows.map((r) => r.model).filter(Boolean),
-    routes: availableRoutesRows.map((r) => r.route).filter(Boolean),
-    sources: availableSourcesRows.map((r) => r.source).filter(Boolean),
-    names: availableNamesRows.map((r) => r.name).filter((name): name is string => Boolean(name) && name !== "-")
-  };
-
+  const totalModels = toCount(modelCountRows[0]?.count);
   return {
-    overview,
-    empty: totalRequests === 0,
-    days,
-    meta: { page, pageSize, totalModels, totalPages },
-    filters,
-    timezone: tz,
-    lastSyncAt: (() => { const d = lastSyncAtRows[0]?.v; return d ? new Date(d).toISOString() : null; })()
+    overview, empty: requests === 0, days: range.days,
+    meta: { page, pageSize, totalModels, totalPages: Math.max(1, Math.ceil(totalModels/pageSize)) },
+    filters: { models: options.models, routes: options.routes, sources: options.names, names: options.names, providers: options.providers, serviceTiers: options.serviceTiers },
+    timezone, lastSyncAt: lastRows[0]?.last ? new Date(lastRows[0].last).toISOString() : null,
+    costByCurrency, pricingCoverage: { priced, unpriced, partial, rate: requests ? priced / requests : 1 }
   };
 }

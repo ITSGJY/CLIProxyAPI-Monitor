@@ -321,3 +321,8 @@
 ## 2025-12-29
 
 - 初始化鉴权中间件、同步接口结构与基础文档，形成项目最初可用版本。
+
+## 2026-11-17
+
+- 实施 Phase 5 Dashboard Read Path：Overview、Explore、Records 切换至规范事件表；增加统一筛选、货币安全成本、价格覆盖率、稳定游标分页及 PII 安全的确定性散点抽样。
+- 通过增量迁移 0006 扩展 Rollup 的 API Key、Service Tier、Cache Creation 和定价覆盖维度；新增采集状态与缺口页面及 API。

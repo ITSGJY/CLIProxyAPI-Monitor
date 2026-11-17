@@ -128,3 +128,13 @@ pm2 start adapter.js --name cpa-adapter
 - [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 - [Linux.DO](https://linux.do/)
 - [Vercel](https://vercel.com/)
+
+
+### Phase 5 Dashboard Read Path
+
+- Overview, Explore and Records now read canonical `usage_events`; Overview uses fresh timezone-matched daily rollups for complete local-day trend ranges up to 90 days when selected filters are represented by the rollup dimensions; partial-day and unsupported filter combinations safely fall back to event aggregation.
+- Costs use persisted `cost_nanos` and remain separated by currency; unpriced costs remain `null` in Records and pricing coverage is explicit.
+- Explore applies SQL filters before deterministic time-stratified sampling (maximum 8,000 points) and returns a PII-safe projection.
+- Records uses a versioned cursor with multi-sort lexicographic tie-breaking and event ID stability.
+- `/collector` exposes Collector health, Inbox counts, recent pull attempts, ingestion gaps and price coverage.
+- Migration `0006_phase5_dashboard_rollup_dimensions.sql` extends Rollup dimensions for API Key, Service Tier, cache creation and pricing coverage. Phase 6 historical imports and Phase 7 production cutover remain out of scope.

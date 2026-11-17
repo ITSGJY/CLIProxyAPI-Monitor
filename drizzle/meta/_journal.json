@@ -43,6 +43,13 @@
       "when": 1794848400000,
       "tag": "0005_usage_pipeline",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794934800001,
+      "tag": "0006_phase5_dashboard_rollup_dimensions",
+      "breakpoints": true
     }
   ]
 }
