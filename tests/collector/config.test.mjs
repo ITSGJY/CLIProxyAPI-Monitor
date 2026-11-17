@@ -58,10 +58,18 @@ test("production or remote PostgreSQL databases are rejected by default", () => 
   );
 });
 
-test("Collector lease must exceed the polling heartbeat interval", () => {
+test("Collector lease covers the bounded retry window as well as the polling interval", () => {
   assert.throws(
-    () => loadCollectorConfig({ ...safeEnv, COLLECTOR_POLL_INTERVAL_MS: "20000", COLLECTOR_LEASE_SECONDS: "30" }),
-    /must be at least three times/
+    () => loadCollectorConfig({ ...safeEnv, COLLECTOR_POLL_INTERVAL_MS: "10000", COLLECTOR_LEASE_SECONDS: "30" }),
+    /at least 60 seconds/
+  );
+  assert.equal(
+    loadCollectorConfig({ ...safeEnv, COLLECTOR_POLL_INTERVAL_MS: "10000", COLLECTOR_LEASE_SECONDS: "60" }).leaseSeconds,
+    60
+  );
+  assert.equal(
+    loadCollectorConfig({ ...safeEnv, CPA_REDIS_ADDR: "127.0.0.1:19171", CPA_MANAGEMENT_BASE_URL: "http://127.0.0.1:19171", COLLECTOR_POLL_INTERVAL_MS: "60000", COLLECTOR_LEASE_SECONDS: "180" }).leaseSeconds,
+    180
   );
 });
 

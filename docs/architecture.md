@@ -16,11 +16,11 @@ CLIProxyAPI v8
   v
 Collector
   |
-  | one short PostgreSQL transaction per pulled batch
+  | one PostgreSQL bulk INSERT transaction per pulled batch
   v
 usage_pull_attempts + usage_inbox (durable, sanitized payloads)
   |
-  | single-worker Processor, retry + lease
+  | Phase 4: separate Processor worker, retry + lease
   v
 usage_event_identity (global idempotency ledger)
   |
@@ -32,7 +32,7 @@ usage_events (monthly range partitions)
   +--> rebuildable hourly / daily rollups
 ```
 
-The Collector is disabled by default. It has no default CPA host, port, management key or database URL. Phase 1 requires loopback CPA test endpoints and a loopback PostgreSQL database whose name contains `test`. Port 8317 is blocked unless `CPA_ALLOW_PRODUCTION_TARGET=true` is explicitly supplied; a non-test database additionally requires `COLLECTOR_ALLOW_PRODUCTION_DATABASE=true`. Both flags are reserved for a separately approved production cutover.
+The Collector is disabled by default. It has no default CPA host, port, management key or database URL. Phase 3 validation requires loopback CPA test endpoints and a loopback PostgreSQL database whose name contains `test`. Port 8317 is blocked unless `CPA_ALLOW_PRODUCTION_TARGET=true` is explicitly supplied; a non-test database additionally requires `COLLECTOR_ALLOW_PRODUCTION_DATABASE=true`. Both flags are reserved for a separately approved Phase 7 production cutover.
 
 ## CPA v8 queue semantics
 
@@ -55,7 +55,7 @@ Therefore:
 
 LPOP is destructive and CPA does not provide a transactional acknowledgement spanning CPA and PostgreSQL. The durable inbox guarantees replayable processing **after** the inbox transaction commits; it cannot make the CPA pop and PostgreSQL commit atomic.
 
-Because CPA v8.0.75 exposes LPOP but not LLEN, the Collector creates a pull-attempt record before each destructive poll. Empty polls are audited and pruned after seven days. Non-empty batches are persisted to `usage_inbox` in one transaction before the Processor runs. A PostgreSQL lease permits only one Collector worker for a CPA instance; expired leases can be recovered after a process crash. If a process dies after LPOP but before inbox commit, startup recovery marks the attempt interrupted and writes a gap record. This makes the uncertainty observable; it cannot recover an item that CPA has already removed.
+Because CPA v8.0.75 exposes LPOP but not LLEN, the Collector commits a pull-attempt record before each destructive poll. Empty polls are audited and pruned after seven days. Non-empty batches are sanitized and bulk-inserted into `usage_inbox` in one PostgreSQL transaction; the pull-attempt completion and Collector success state commit in that same transaction. The Collector does not run the Processor; Phase 4 owns a separate worker. A PostgreSQL lease permits only one Collector worker for a CPA instance and is refreshed during long poll intervals and retry backoff. If a process dies after LPOP but before inbox commit, startup recovery marks the attempt interrupted and writes a gap record. If the process detects uncertain consumption itself, it writes the gap and exits non-zero so the service supervisor can restart it. This makes the uncertainty observable; it cannot recover an item that CPA has already removed.
 
 The Collector must never issue HTTP fallback after a successful RESP pop whose PostgreSQL persistence failed, because that would consume a second batch and obscure the first failure.
 
@@ -76,7 +76,7 @@ The Collector must never issue HTTP fallback after a successful RESP pop whose P
 | `usage_ingest_gaps` | Explicit record of uncertain / interrupted pulls |
 | `usage_import_batches` | Auditable OMC / Keeper / CPAMP / legacy Monitor imports |
 
-The original `usage_records` table is retained as a legacy UI/history source during Phase 1. The new Collector writes only to `usage_inbox` and `usage_events`; switching the three UI read paths to the canonical event model is a later phase. This avoids duplicating each live event into two stores.
+The original `usage_records` table is retained as a legacy UI/history source during Phase 1. The Phase 3 Collector writes only to `usage_inbox`; the Phase 4 Processor normalizes and writes `usage_events`. Switching the three UI read paths to the canonical event model is a later phase. This avoids duplicating each live event into two stores.
 
 ## Event identity
 
@@ -105,6 +105,7 @@ The dedicated PostgreSQL host has a 30-connection server limit and 1 GB RAM. Ini
 
 - Web application pool: maximum 3.
 - Collector pool: maximum 2.
+- Collector health CLI pool: maximum 1, short-lived.
 - Migration / operator connections: temporary and serialized.
 
 Do not increase these defaults without observing `pg_stat_activity` and measuring memory under realistic dashboard queries.

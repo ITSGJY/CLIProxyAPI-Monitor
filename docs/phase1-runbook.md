@@ -46,10 +46,9 @@ Optional bounds:
 - `COLLECTOR_MODE=pull-first` (Subscribe is not enabled)
 - `COLLECTOR_POLL_INTERVAL_MS=10000`
 - `COLLECTOR_BATCH_SIZE=100`
-- `COLLECTOR_PROCESSOR_BATCH_SIZE=50`
-- `COLLECTOR_LEASE_SECONDS=60`
+- `COLLECTOR_LEASE_SECONDS=60` (minimum `max(60, 3 × poll interval in seconds)`)
 
-Run `pnpm collector` only against an isolated CPA test instance and disposable PostgreSQL database. The command is not run as part of build or CI. Empty poll attempts are retained for seven days and pruned automatically; use a 10-second default poll interval to bound audit-row growth.
+Run `pnpm collector` only against an isolated CPA test instance and disposable PostgreSQL database. The command is not run as part of build or CI. Empty poll attempts are retained for seven days and pruned automatically; use a 10-second default poll interval to bound audit-row growth. Phase 3 operations and health checks are documented in [the Phase 3 Collector runbook](phase3-collector.md).
 
 ## Phase 1 exit criteria
 

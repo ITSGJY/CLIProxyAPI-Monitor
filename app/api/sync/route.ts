@@ -6,7 +6,7 @@ import { db } from "@/lib/db/client";
 import { authFileMappings, usageCollectorCommands, usageCollectorInstances, usageCollectorState } from "@/lib/db/schema";
 import { toAuthFileMappings } from "@/lib/auth-files";
 
-const { and, asc, eq, gt, sql } = DrizzleOrm as any;
+const { and, asc, eq, gt, inArray, isNull, sql } = DrizzleOrm as any;
 const PASSWORD = process.env.PASSWORD || process.env.CLIPROXY_SECRET_KEY || "";
 const COOKIE_NAME = "dashboard_auth";
 const AUTH_FILES_TIMEOUT_MS = 15_000;
@@ -133,7 +133,9 @@ async function enqueuePull(request: Request) {
       .innerJoin(usageCollectorState, eq(usageCollectorState.instanceId, usageCollectorInstances.instanceId))
       .where(and(
         eq(usageCollectorInstances.enabled, true),
-        eq(usageCollectorState.state, "receiving"),
+        inArray(usageCollectorState.state, ["checking", "receiving"]),
+        gt(usageCollectorState.leaseExpiresAt, new Date()),
+        isNull(usageCollectorState.lastErrorCode),
         gt(usageCollectorState.updatedAt, new Date(Date.now() - 30_000))
       ))
       .orderBy(asc(usageCollectorInstances.instanceId))

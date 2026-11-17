@@ -10,6 +10,7 @@ import {
   ensureCollectorInstance,
   heartbeatCollectorState,
   markCollectorStopped,
+  markInterruptedPullAttempts,
   markPullAttemptFailed,
   persistPulledBatch,
   processInboxBatch,
@@ -191,32 +192,43 @@ test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safet
     await scopedPool.query("DROP TRIGGER fail_inbox_insert_for_test ON usage_inbox");
     await scopedPool.query("DROP FUNCTION fail_inbox_insert_for_test()");
 
+    const secondRecord = {
+      ...record,
+      timestamp: new Date(new Date(eventTimestamp).getTime() + 1000).toISOString(),
+      request_id: "phase1-request-002"
+    };
     const firstAttempt = await createPullAttempt(scopedPool, {
       instanceId: config.instanceId,
       transport: "resp",
       requestedCount: 10
     });
+    const attemptHeartbeat = await scopedPool.query(
+      "SELECT last_attempt_at FROM usage_collector_state WHERE instance_id = $1",
+      [config.instanceId]
+    );
+    assert.ok(attemptHeartbeat.rows[0].last_attempt_at, "starting a destructive pull must update the Collector health heartbeat");
     const firstPersist = await persistPulledBatch(scopedPool, {
       attemptId: firstAttempt,
       instanceId: config.instanceId,
       transport: "resp",
-      items: [record]
+      items: [record, secondRecord]
     });
-    assert.equal(firstPersist.persistedCount, 1);
+    assert.equal(firstPersist.persistedCount, 2, "one pull batch must be bulk-inserted into the durable inbox");
 
     const inboxBeforeProcess = await scopedPool.query(
-      "SELECT status, payload->>'api_key' AS api_key FROM usage_inbox WHERE pull_attempt_id = $1",
+      "SELECT status, payload->>'api_key' AS api_key FROM usage_inbox WHERE pull_attempt_id = $1 ORDER BY id",
       [firstAttempt]
     );
-    assert.equal(inboxBeforeProcess.rows[0].status, "pending");
-    assert.equal(inboxBeforeProcess.rows[0].api_key, "****6789");
+    assert.equal(inboxBeforeProcess.rowCount, 2);
+    assert.deepEqual(inboxBeforeProcess.rows.map((row) => row.status), ["pending", "pending"]);
+    assert.deepEqual(inboxBeforeProcess.rows.map((row) => row.api_key), ["****6789", "****6789"]);
 
     const firstProcess = await processInboxBatch(scopedPool, {
       instanceId: config.instanceId,
       workerId: "worker-a",
       batchSize: 10
     });
-    assert.equal(firstProcess.processed, 1);
+    assert.equal(firstProcess.processed, 2);
 
     const pricedEvent = await scopedPool.query(
       "SELECT price_version_id, cost_nanos, cost_currency, pricing_status FROM usage_events WHERE request_id = $1",
@@ -277,7 +289,7 @@ test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safet
         identities: Number(firstCounts.rows[0].identities),
         processed: Number(firstCounts.rows[0].processed)
       },
-      { events: 1, identities: 1, processed: 1 }
+      { events: 2, identities: 2, processed: 2 }
     );
 
     const partition = await scopedPool.query(
@@ -295,20 +307,23 @@ test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safet
       attemptId: duplicateAttempt,
       instanceId: config.instanceId,
       transport: "http",
-      items: [{ ...record, api_key: "sk-another-key-999999" }]
+      items: [
+        { ...record, api_key: "sk-another-key-999999" },
+        { ...secondRecord, api_key: "sk-another-key-999999" }
+      ]
     });
     const duplicateProcess = await processInboxBatch(scopedPool, {
       instanceId: config.instanceId,
       workerId: "worker-a",
       batchSize: 10
     });
-    assert.equal(duplicateProcess.duplicates, 1);
+    assert.equal(duplicateProcess.duplicates, 2);
 
     const duplicateCounts = await scopedPool.query(
       "SELECT (SELECT count(*) FROM usage_events) AS events, (SELECT duplicate_count FROM usage_event_identity WHERE request_id = $1) AS duplicates",
       ["phase1-request-001"]
     );
-    assert.equal(Number(duplicateCounts.rows[0].events), 1);
+    assert.equal(Number(duplicateCounts.rows[0].events), 2);
     assert.equal(Number(duplicateCounts.rows[0].duplicates), 1);
 
     await scopedPool.query(`
@@ -352,12 +367,31 @@ test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safet
       "SELECT (SELECT count(*) FROM usage_events) AS events, (SELECT count(*) FROM usage_event_identity WHERE request_id = 'force-rollback') AS identities, (SELECT status FROM usage_inbox WHERE pull_attempt_id = $1) AS inbox_status",
       [rollbackAttempt]
     );
-    assert.equal(Number(rollbackCounts.rows[0].events), 1);
+    assert.equal(Number(rollbackCounts.rows[0].events), 2);
     assert.equal(Number(rollbackCounts.rows[0].identities), 0);
     assert.equal(rollbackCounts.rows[0].inbox_status, "pending");
 
     await scopedPool.query("DROP TRIGGER fail_identity_insert_for_test ON usage_event_identity");
     await scopedPool.query("DROP FUNCTION fail_identity_insert_for_test()");
+
+    const interruptedAttempt = await createPullAttempt(scopedPool, {
+      instanceId: config.instanceId,
+      transport: "resp",
+      requestedCount: 10
+    });
+    assert.equal(await markInterruptedPullAttempts(scopedPool, config.instanceId, 0), 1);
+    const gapAudit = await scopedPool.query(
+      "SELECT status, error_code FROM usage_pull_attempts WHERE id = $1",
+      [interruptedAttempt]
+    );
+    assert.equal(gapAudit.rows[0].status, "interrupted");
+    assert.equal(gapAudit.rows[0].error_code, "collector_interrupted");
+    const gapCount = await scopedPool.query(
+      "SELECT count(*) AS gaps FROM usage_ingest_gaps WHERE pull_attempt_id = $1",
+      [interruptedAttempt]
+    );
+    assert.equal(Number(gapCount.rows[0].gaps), 1, "an uncertain destructive pull must create one explicit ingest gap");
+
     await markCollectorStopped(scopedPool, config.instanceId, "worker-a");
     const stoppedState = await scopedPool.query(
       `SELECT state.lease_owner, state.lease_expires_at, state.state, instance.enabled

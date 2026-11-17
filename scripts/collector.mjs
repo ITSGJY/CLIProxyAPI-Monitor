@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { getPullBackoffMs } from "../lib/collector/retry.mjs";
 import { loadCollectorConfig } from "../lib/collector/config.mjs";
 import { pullUsageViaResp } from "../lib/collector/resp-client.mjs";
 import { pullUsageViaHttp } from "../lib/collector/http-queue.mjs";
@@ -13,8 +14,7 @@ import {
   markInterruptedPullAttempts,
   markPullAttemptFailed,
   persistPulledBatch,
-  pruneEmptyPullAttempts,
-  processInboxBatch
+  pruneEmptyPullAttempts
 } from "../lib/collector/postgres-store.mjs";
 
 function safeMessage(error) {
@@ -26,9 +26,27 @@ function safeMessage(error) {
     .slice(0, 300);
 }
 
-async function recordUncertainPull(pool, instanceId, error) {
+async function stopAfterUncertainPull(pool, instanceId, error) {
   await markInterruptedPullAttempts(pool, instanceId, 0);
   console.error("CPA queue pull may have consumed data before durable inbox commit:", safeMessage(error));
+  const fatal = new Error("Collector stopped after an uncertain destructive pull; inspect usage_ingest_gaps before restarting");
+  fatal.code = "CPA_USAGE_PULL_UNCERTAIN";
+  throw fatal;
+}
+
+async function waitForNextCycle(milliseconds, signal, refreshLease) {
+  const deadline = Date.now() + milliseconds;
+  while (!signal.aborted) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    try {
+      await sleep(Math.min(10_000, remaining), undefined, { signal });
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      throw error;
+    }
+    if (Date.now() < deadline && !signal.aborted) await refreshLease();
+  }
 }
 
 async function run() {
@@ -44,13 +62,19 @@ async function run() {
     max: 2,
     idleTimeoutMillis: 10_000,
     connectionTimeoutMillis: 5_000,
+    statement_timeout: 10_000,
+    query_timeout: 12_000,
     application_name: "cliproxyapi-monitor-collector"
   });
 
   let stopping = false;
   let paused = false;
   let consecutiveFailures = 0;
-  const stop = () => { stopping = true; };
+  const stopController = new AbortController();
+  const stop = () => {
+    stopping = true;
+    stopController.abort();
+  };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
 
@@ -63,6 +87,7 @@ async function run() {
     await pruneEmptyPullAttempts(pool, config.instanceId, 7);
     let lastEmptyAttemptCleanupAt = Date.now();
     console.log(`Collector ready for instance ${config.instanceId}; mode=pull-first; queue=usage`);
+    const refreshLease = () => heartbeatCollectorState(pool, config.instanceId, config.workerId, null, config.leaseSeconds);
 
     while (!stopping) {
       const commands = await claimCollectorCommands(pool, config.instanceId, config.workerId);
@@ -82,16 +107,7 @@ async function run() {
         config.leaseSeconds
       );
       if (paused) {
-        try {
-          await processInboxBatch(pool, {
-            instanceId: config.instanceId,
-            workerId: config.workerId,
-            batchSize: config.processorBatchSize
-          });
-        } catch (error) {
-          console.error("Usage inbox processor failed while Collector was paused:", safeMessage(error));
-        }
-        await sleep(config.pollIntervalMs);
+        await waitForNextCycle(config.pollIntervalMs, stopController.signal, refreshLease);
         continue;
       }
 
@@ -115,9 +131,7 @@ async function run() {
         });
       } catch (respError) {
         if (respError?.uncertainConsumption) {
-          await recordUncertainPull(pool, config.instanceId, respError);
-          stopping = true;
-          break;
+          await stopAfterUncertainPull(pool, config.instanceId, respError);
         }
 
         await markPullAttemptFailed(pool, respAttemptId, respError, "resp_pull_failed");
@@ -138,21 +152,20 @@ async function run() {
           attemptId = httpAttemptId;
         } catch (httpError) {
           if (httpError?.uncertainConsumption) {
-            await recordUncertainPull(pool, config.instanceId, httpError);
-            stopping = true;
-            break;
+            await stopAfterUncertainPull(pool, config.instanceId, httpError);
           }
           await markPullAttemptFailed(pool, httpAttemptId, httpError, "http_fallback_failed");
           consecutiveFailures += 1;
-          const backoff = Math.min(30_000, config.pollIntervalMs * (2 ** Math.min(consecutiveFailures, 5)));
+          const backoff = getPullBackoffMs(consecutiveFailures, config.pollIntervalMs);
           console.error("CPA Usage Queue pull failed over RESP and HTTP:", safeMessage(httpError));
-          await sleep(backoff);
+          await waitForNextCycle(backoff, stopController.signal, refreshLease);
           continue;
         }
       }
 
+      let persisted;
       try {
-        await persistPulledBatch(pool, {
+        persisted = await persistPulledBatch(pool, {
           attemptId,
           instanceId: config.instanceId,
           transport,
@@ -161,9 +174,7 @@ async function run() {
         });
       } catch (persistError) {
         // Both RESP LPOP and the HTTP queue endpoint are destructive.
-        await recordUncertainPull(pool, config.instanceId, persistError);
-        stopping = true;
-        break;
+        await stopAfterUncertainPull(pool, config.instanceId, persistError);
       }
 
       if (Date.now() - lastEmptyAttemptCleanupAt >= 6 * 60 * 60 * 1000) {
@@ -171,34 +182,24 @@ async function run() {
         lastEmptyAttemptCleanupAt = Date.now();
       }
 
-      if (items.length > 0) consecutiveFailures = 0;
-
-      try {
-        const processed = await processInboxBatch(pool, {
-          instanceId: config.instanceId,
-          workerId: config.workerId,
-          batchSize: config.processorBatchSize
-        });
-        if (items.length > 0 || processed.claimed > 0) {
-          console.log(JSON.stringify({
-            transport,
-            pulled: items.length,
-            processed: processed.processed,
-            duplicates: processed.duplicates,
-            deadLettered: processed.deadLettered,
-            retried: processed.retried
-          }));
-        }
-      } catch (error) {
-        console.error("Usage inbox processor failed; pending rows remain durable:", safeMessage(error));
+      consecutiveFailures = 0;
+      if (items.length > 0) {
+        console.log(JSON.stringify({
+          event: "usage_batch_persisted",
+          transport,
+          pulled: items.length,
+          persisted: persisted.persistedCount,
+          attemptId
+        }));
       }
 
-      await sleep(config.pollIntervalMs);
+      await waitForNextCycle(config.pollIntervalMs, stopController.signal, refreshLease);
     }
   } finally {
     try {
       await markCollectorStopped(pool, config.instanceId, config.workerId);
     } catch (error) {
+      process.exitCode = 1;
       console.error("Failed to mark Collector stopped:", safeMessage(error));
     }
     await pool.end();

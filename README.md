@@ -1,7 +1,7 @@
 > [!IMPORTANT]
 > This is the personal **Monitor Plus v2.0** fork. The original `/usage` adapter and Vercel polling flow are legacy compatibility code, not the new ingestion path.
 >
-> Phase 1 adds a disabled-by-default CPA v8 Pull-first Collector, PostgreSQL Durable Inbox, a global event identity ledger, monthly partitioned request events, versioned pricing and rebuildable rollup foundations. See [architecture](docs/architecture.md) and the [Phase 1 runbook](docs/phase1-runbook.md).
+> Phase 1 establishes the PostgreSQL 17 event-store foundation. Phase 3 completes the disabled-by-default CPA v8 Pull-first Collector: RESP AUTH/LPOP, safe HTTP fallback, durable bulk Inbox writes, audited gaps, lease recovery and a standalone health check. The Collector and Phase 4 Processor are separate workers. See [architecture](docs/architecture.md), [Phase 1 runbook](docs/phase1-runbook.md) and [Phase 3 Collector runbook](docs/phase3-collector.md).
 >
 > Do not run the new Collector beside OMC, CPA Usage Keeper or CPA Manager Plus on the production CPA instance. CPA queue pulls are destructive; a separate single-consumer cutover is required.
 
@@ -27,9 +27,9 @@
 
 ### CPA v8 Collector
 
-Collector 是独立 Node 进程，运行 `pnpm collector`。它默认关闭，Phase 1 只允许 loopback CPA 测试端点和名称包含 `test` 的 loopback PostgreSQL 数据库。配置方式见 [Phase 1 Runbook](docs/phase1-runbook.md)。
+Collector 是独立 Node 进程，运行 `pnpm collector`；健康检查运行 `pnpm collector:health`。它默认关闭，Phase 3 验证只允许 loopback CPA 测试端点和名称包含 `test` 的 loopback PostgreSQL 数据库。配置方式见 [Phase 3 Collector Runbook](docs/phase3-collector.md)。
 
-`/api/sync` 只向健康的 Collector 提交一次拉取命令，不直接读取 CPA 队列。不要把 Collector 与 OMC、CPA Usage Keeper 或 CPA Manager Plus 同时连接到同一个生产 CPA 队列。
+`/api/sync` 只向持有有效 Lease 且心跳新鲜的 Collector 提交一次拉取命令，不直接读取 CPA 队列。不要把 Collector 与 OMC、CPA Usage Keeper 或 CPA Manager Plus 同时连接到同一个生产 CPA 队列。Phase 3 只负责把原始使用事件可靠落入 Durable Inbox；独立 Processor 属于 Phase 4。
 
 ## 预览
 
