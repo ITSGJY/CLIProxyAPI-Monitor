@@ -17,7 +17,8 @@
     "collector": "node scripts/collector.mjs",
     "collector:health": "node scripts/collector-health.mjs",
     "processor": "node scripts/processor.mjs",
-    "rollup": "node scripts/rollup.mjs"
+    "rollup": "node scripts/rollup.mjs",
+    "test:import": "node --test tests/omc-import.test.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

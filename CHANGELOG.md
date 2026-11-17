@@ -326,3 +326,9 @@
 
 - 实施 Phase 5 Dashboard Read Path：Overview、Explore、Records 切换至规范事件表；增加统一筛选、货币安全成本、价格覆盖率、稳定游标分页及 PII 安全的确定性散点抽样。
 - 通过增量迁移 0006 扩展 Rollup 的 API Key、Service Tier、Cache Creation 和定价覆盖维度；新增采集状态与缺口页面及 API。
+
+## 2026-11-18
+
+- Phase 6：发现并只读快照 Oh My CPA SQLite 历史库；新增可恢复、按源快照 SHA-256 绑定、幂等的 PostgreSQL 导入工具及运行审计表，完整保留 105 个历史模型价格版本。
+- 保留 17,132 条请求级历史事件、历史成本与定价状态；源价格版本 ID 与原始 event_key 单独留存，避免误关联目标价格外键或丢失重复键审计；排除 IP、转发地址、User-Agent、原始请求体、失败正文和响应头。
+- 在隔离 PostgreSQL 17 中完成全量导入、Token/费用/时间/定价对账及 Rollup/API 验证；未写入生产数据库，Phase 7 部署与切换仍未执行。

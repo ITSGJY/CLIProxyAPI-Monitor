@@ -51,6 +51,9 @@ jobs:
       - name: Run PostgreSQL 17 integration tests
         run: pnpm test:postgres
 
+      - name: Run OMC SQLite import integration tests
+        run: pnpm test:import
+
       - name: Run lint
         run: pnpm lint
 

@@ -138,3 +138,11 @@ pm2 start adapter.js --name cpa-adapter
 - Records uses a versioned cursor with multi-sort lexicographic tie-breaking and event ID stability.
 - `/collector` exposes Collector health, Inbox counts, recent pull attempts, ingestion gaps and price coverage.
 - Migration `0006_phase5_dashboard_rollup_dimensions.sql` extends Rollup dimensions for API Key, Service Tier, cache creation and pricing coverage. Phase 6 historical imports and Phase 7 production cutover remain out of scope.
+
+
+### Phase 6 Historical OMC Import
+
+- `scripts/snapshot-omc-sqlite.py` creates a consistent read-only SQLite snapshot. `scripts/omc-sqlite-source.py` validates and exports an allowlisted source projection. `scripts/import-omc-sqlite.mjs` performs a resumable, SHA-256-bound, idempotent import into loopback PostgreSQL test databases only.
+- Migration `0007_phase6_legacy_import.sql` adds import-run audit/progress, preserves source price-version IDs separately from target price-version foreign keys, and retains OMC's full historical price-version catalog in a separate audit table.
+- The OMC source is request-level `usage_events`; duplicate `event_key` rows are retained using source row ID identity, with the original key retained as `source_event_key`. Sensitive raw request/network fields are excluded.
+- See `docs/phase6-legacy-import.md` for source inventory, mapping, reconciliation and Phase 7 boundary.

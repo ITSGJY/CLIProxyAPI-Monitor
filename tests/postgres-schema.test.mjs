@@ -50,7 +50,8 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
         "0003_add_auth_index_to_usage_records.sql",
         "0004_add_auth_file_mappings.sql",
         "0005_usage_pipeline.sql",
-        "0006_phase5_dashboard_rollup_dimensions.sql"
+        "0006_phase5_dashboard_rollup_dimensions.sql",
+        "0007_phase6_legacy_import.sql"
       ];
       for (const migration of migrations) {
         const sql = await readFile(new URL("../drizzle/" + migration, import.meta.url), "utf8");
@@ -66,6 +67,14 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
         "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'model_prices' AND column_name = 'price_version_id'"
       );
       assert.equal(priceColumn.rowCount, 1);
+      const importColumns = await client.query(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'usage_import_runs'"
+      );
+      assert.ok(importColumns.rows.some((row) => row.column_name === "last_source_id"));
+      const sourcePriceColumn = await client.query(
+        "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'usage_events' AND column_name = 'source_price_version_id'"
+      );
+      assert.equal(sourcePriceColumn.rowCount, 1);
     } finally {
       client.release();
     }

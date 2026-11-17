@@ -101,6 +101,69 @@ export const usageCollectorInstances = pgTable("usage_collector_instances", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull()
 });
 
+export const usageImportRuns = pgTable(
+  "usage_import_runs",
+  {
+    id: bigint("id", { mode: "number" }).generatedAlwaysAsIdentity().primaryKey(),
+    sourceKey: text("source_key").notNull(),
+    sourceSha256: text("source_sha256").notNull(),
+    sourceName: text("source_name").notNull(),
+    sourceSchemaVersion: integer("source_schema_version"),
+    status: text("status").notNull().default("planned"),
+    totalRows: bigint("total_rows", { mode: "number" }).notNull().default(0),
+    processedRows: bigint("processed_rows", { mode: "number" }).notNull().default(0),
+    insertedRows: bigint("inserted_rows", { mode: "number" }).notNull().default(0),
+    skippedRows: bigint("skipped_rows", { mode: "number" }).notNull().default(0),
+    lastSourceId: bigint("last_source_id", { mode: "number" }).notNull().default(0),
+    minOccurredAt: timestamp("min_occurred_at", { withTimezone: true }),
+    maxOccurredAt: timestamp("max_occurred_at", { withTimezone: true }),
+    sourceDuplicateKeyGroups: bigint("source_duplicate_key_groups", { mode: "number" }).notNull().default(0),
+    sourceDuplicateKeyRows: bigint("source_duplicate_key_rows", { mode: "number" }).notNull().default(0),
+    pricedRows: bigint("priced_rows", { mode: "number" }).notNull().default(0),
+    unpricedRows: bigint("unpriced_rows", { mode: "number" }).notNull().default(0),
+    sourcePriceVersionRows: bigint("source_price_version_rows", { mode: "number" }).notNull().default(0),
+    importedPriceVersionRows: bigint("imported_price_version_rows", { mode: "number" }).notNull().default(0),
+    manifest: jsonb("manifest").notNull().default(sql`'{}'::jsonb`),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    lastError: text("last_error")
+  },
+  (table) => ({
+    sourceHashUnique: uniqueIndex("usage_import_runs_source_hash_idx").on(table.sourceKey, table.sourceSha256),
+    statusUpdatedIdx: index("usage_import_runs_status_updated_idx").on(table.status, table.updatedAt),
+    statusCheck: check("usage_import_runs_status_check", sql`${table.status} IN ('planned', 'running', 'completed', 'failed')`),
+    sourceHashCheck: check("usage_import_runs_source_sha_check", sql`${table.sourceSha256} ~ '^[0-9a-f]{64}$'`)
+  })
+);
+
+export const usageImportSourcePriceVersions = pgTable(
+  "usage_import_source_price_versions",
+  {
+    sourceKey: text("source_key").notNull(),
+    sourcePriceVersionId: bigint("source_price_version_id", { mode: "number" }).notNull(),
+    sourceSha256: text("source_sha256").notNull(),
+    model: text("model").notNull(),
+    effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull(),
+    available: boolean("available").notNull(),
+    promptPricePer1M: numeric("prompt_price_per_1m", { precision: 20, scale: 10 }).notNull(),
+    completionPricePer1M: numeric("completion_price_per_1m", { precision: 20, scale: 10 }).notNull(),
+    cacheReadPricePer1M: numeric("cache_read_price_per_1m", { precision: 20, scale: 10 }).notNull(),
+    cacheWritePricePer1M: numeric("cache_write_price_per_1m", { precision: 20, scale: 10 }).notNull(),
+    priceMultiplier: numeric("price_multiplier", { precision: 20, scale: 10 }).notNull(),
+    source: text("source").notNull(),
+    currency: text("currency").notNull().default("USD"),
+    tiers: jsonb("tiers").notNull().default(sql`'[]'::jsonb`),
+    upstreamId: text("upstream_id").notNull().default(""),
+    channel: text("channel").notNull().default("")
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.sourceKey, table.sourcePriceVersionId] }),
+    modelEffectiveIdx: index("usage_import_source_price_versions_model_effective_idx").on(table.sourceKey, table.model, table.effectiveFrom),
+    sourceHashCheck: check("usage_import_source_price_versions_sha_check", sql`${table.sourceSha256} ~ '^[0-9a-f]{64}$'`)
+  })
+);
+
 export const usagePullAttempts = pgTable(
   "usage_pull_attempts",
   {
@@ -134,6 +197,8 @@ export const usageEvents = pgTable(
     originSystem: text("origin_system").notNull().default("cpa_live"),
     sourceTransport: text("source_transport").notNull(),
     sourceNativeId: text("source_native_id"),
+    sourceEventKey: text("source_event_key"),
+    sourcePriceVersionId: bigint("source_price_version_id", { mode: "number" }),
     identityKey: text("identity_key").notNull(),
     provider: text("provider"),
     endpoint: text("endpoint"),
