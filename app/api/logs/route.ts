@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { config, assertEnv } from "@/lib/config";
+import { config, assertCpaEnv } from "@/lib/config";
 
 export const runtime = "nodejs";
 
@@ -13,7 +13,7 @@ function endpoint(after?: string | null) {
 
 export async function GET(request: Request) {
   try {
-    assertEnv();
+    assertCpaEnv();
   } catch (error) {
     return NextResponse.json({ error: (error as Error).message }, { status: 501 });
   }

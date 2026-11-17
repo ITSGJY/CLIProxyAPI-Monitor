@@ -1,7 +1,14 @@
 # CHANGELOG
 
-## 2026-05-21
+## 2026-11-17
 
+- 建立 Phase 1 PostgreSQL 采集基础：
+  - 新增 CPA v8 RESP LPOP 主采集与 HTTP Usage Queue 回退模块。
+  - 新增 PostgreSQL Durable Inbox、单 Worker Processor、全局事件身份账本和月度分区事件表。
+  - 新增价格版本、导入批次、采集缺口及可重建聚合的基础表。
+  - Collector 默认关闭，未配置明确测试目标时不会连接 CPA；生产端口 8317 默认受保护。
+- 将数据库迁移从构建流程中拆分，改为显式执行 `pnpm db:migrate`。
+- 增加 RESP、HTTP、规范化、身份去重和 PostgreSQL 事务集成测试。
 - 调整 [adapter.js](adapter.js) 的 route 字段映射：
   - 聚合写库前，`route`（适配器内部沿用 `endpoint` 字段）改为优先取 `api_key`，其次取 `auth_type`，最后才回退到原始 `endpoint`。
   - 修复上游队列中 `endpoint` 为 `POST /v1/chat/completions` 时被原样入库，导致 route 异常的问题。

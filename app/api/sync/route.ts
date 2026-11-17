@@ -1,110 +1,90 @@
 import { NextResponse } from "next/server";
 import * as nextHeaders from "next/headers";
 import * as DrizzleOrm from "drizzle-orm";
-import { config, assertEnv } from "@/lib/config";
+import { assertEnv, config } from "@/lib/config";
 import { db } from "@/lib/db/client";
-import { authFileMappings, usageRecords } from "@/lib/db/schema";
+import { authFileMappings, usageCollectorCommands, usageCollectorInstances, usageCollectorState } from "@/lib/db/schema";
 import { toAuthFileMappings } from "@/lib/auth-files";
-import { parseUsagePayload, toUsageRecords } from "@/lib/usage";
 
-const { eq, sql } = DrizzleOrm as any;
-
-export const runtime = "nodejs";
-
+const { and, asc, eq, gt, sql } = DrizzleOrm as any;
 const PASSWORD = process.env.PASSWORD || process.env.CLIPROXY_SECRET_KEY || "";
 const COOKIE_NAME = "dashboard_auth";
 const AUTH_FILES_TIMEOUT_MS = 15_000;
+const AUTH_FILES_INSERT_CHUNK_SIZE = 500;
 
-function toPositiveInt(raw: string | undefined, fallback: number): number {
-  if (!raw) return fallback;
-  const value = Number.parseInt(raw, 10);
-  if (Number.isNaN(value) || value <= 0) return fallback;
-  return value;
-}
+export const runtime = "nodejs";
 
-// 可通过 NEXT_PUBLIC_SYNC_TIMEOUT_MS 环境变量调节（毫秒），默认 120 秒
-const USAGE_TIMEOUT_MS = toPositiveInt(process.env.NEXT_PUBLIC_SYNC_TIMEOUT_MS, 120_000);
-const AUTH_FILES_INSERT_CHUNK_SIZE = toPositiveInt(process.env.AUTH_FILES_INSERT_CHUNK_SIZE, 500);
-const USAGE_INSERT_CHUNK_SIZE = toPositiveInt(process.env.USAGE_INSERT_CHUNK_SIZE, 1000);
-
-function chunkArray<T>(items: T[], size: number): T[][] {
-  if (items.length === 0) return [];
-  const chunks: T[][] = [];
-  for (let i = 0; i < items.length; i += size) {
-    chunks.push(items.slice(i, i + size));
-  }
-  return chunks;
+function missingPassword() {
+  return NextResponse.json({ error: "PASSWORD or CRON_SECRET is missing" }, { status: 501 });
 }
 
 function unauthorized() {
   return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 }
 
-function missingPassword() {
-  return NextResponse.json({ error: "PASSWORD is missing" }, { status: 501 });
-}
-
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    return await fetch(url, {
-      ...init,
-      signal: controller.signal
-    });
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
 async function hashPassword(value: string) {
   const data = new TextEncoder().encode(value);
   const hashBuffer = await crypto.subtle.digest("SHA-256", data);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  return hashArray.map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function isAuthorized(request: Request) {
-  // 检查 Bearer token（用于 cron job 等外部调用）
-  const allowed = [config.password, config.cronSecret].filter(Boolean).map((v) => `Bearer ${v}`);
+  const allowed = [config.password, config.cronSecret]
+    .filter(Boolean)
+    .map((value) => "Bearer " + value);
+
   if (allowed.length > 0) {
-    const auth = request.headers.get("authorization") || "";
-    if (allowed.includes(auth)) return true;
+    const authorization = request.headers.get("authorization") || "";
+    if (allowed.includes(authorization)) return true;
   }
-  
-  // 检查用户的 dashboard cookie（用于前端调用）
+
   if (PASSWORD) {
-    const cookieStore = await (nextHeaders as any).cookies();
+    const cookieStore = (await (nextHeaders as any).cookies());
     const authCookie = cookieStore.get(COOKIE_NAME);
     if (authCookie) {
       const expectedToken = await hashPassword(PASSWORD);
       if (authCookie.value === expectedToken) return true;
     }
   }
-  
+
   return false;
 }
 
-async function syncAuthFileMappings(pulledAt: Date) {
-  const authFilesUrl = `${config.cliproxy.baseUrl.replace(/\/$/, "")}/auth-files`;
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function syncAuthFileMappings(pulledAt: Date) {
+  if (!config.cliproxy.apiKey || !config.cliproxy.baseUrl) return 0;
+
+  const authFilesUrl = `${config.cliproxy.baseUrl.replace(/\/$/, "")}/auth-files`;
   const response = await fetchWithTimeout(authFilesUrl, {
     headers: {
       Authorization: `Bearer ${config.cliproxy.apiKey}`,
-      "Content-Type": "application/json"
+      Accept: "application/json"
     },
-    cache: "no-store"
+    cache: "no-store",
+    redirect: "error"
   }, AUTH_FILES_TIMEOUT_MS);
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch auth-files: ${response.status} ${response.statusText}`);
-  }
+  if (!response.ok) throw new Error(`auth-files returned HTTP ${response.status}`);
 
-  const json = await response.json();
-  const rows = toAuthFileMappings(json, pulledAt);
-  if (rows.length === 0) return 0;
-
+  const rows = toAuthFileMappings(await response.json(), pulledAt);
   for (const chunk of chunkArray(rows, AUTH_FILES_INSERT_CHUNK_SIZE)) {
     await db
       .insert(authFileMappings)
@@ -122,129 +102,86 @@ async function syncAuthFileMappings(pulledAt: Date) {
         }
       });
   }
-
   return rows.length;
 }
 
-async function performSync(request: Request) {
-  if (!config.password && !config.cronSecret && !PASSWORD) return missingPassword();
-  if (!(await isAuthorized(request))) return unauthorized();
-
+async function enqueuePull(request: Request) {
   try {
     assertEnv();
   } catch (error) {
     return NextResponse.json({ error: (error as Error).message }, { status: 501 });
   }
 
-  const usageUrl = `${config.cliproxy.usageBaseUrl.replace(/\/$/, "")}/usage`;
-  const pulledAt = new Date();
-
-  let response: Response;
-  try {
-    response = await fetchWithTimeout(usageUrl, {
-      headers: {
-        Authorization: `Bearer ${config.cliproxy.apiKey}`,
-        "Content-Type": "application/json"
-      },
-      cache: "no-store"
-    }, USAGE_TIMEOUT_MS);
-  } catch (error) {
-    const isTimeout = error instanceof Error && error.name === "AbortError";
-    console.warn("[sync] usage fetch failed", {
-      reason: isTimeout ? "timeout" : "error",
-      isTimeout,
-      message: error instanceof Error ? error.message : String(error)
-    });
-    return NextResponse.json(
-      {
-        error: isTimeout ? "Upstream usage request timed out" : "Failed to fetch usage"
-      },
-      { status: isTimeout ? 504 : 502 }
-    );
-  }
-
-  if (!response.ok) {
-    return NextResponse.json(
-      { error: "Failed to fetch usage", statusText: response.statusText },
-      { status: response.status }
-    );
-  }
-
-  let payload;
-  try {
-    const json = await response.json();
-    payload = parseUsagePayload(json);
-  } catch (parseError) {
-    console.error("/api/sync parse upstream usage failed:", parseError);
-    return NextResponse.json(
-      { error: "Bad Gateway" },
-      { status: 502 }
-    );
-  }
-
-  const rows = toUsageRecords(payload, pulledAt);
+  if (!config.password && !config.cronSecret && !PASSWORD) return missingPassword();
+  if (!(await isAuthorized(request))) return unauthorized();
 
   let authFilesSynced = 0;
   let authFilesWarning: string | undefined;
   try {
-    authFilesSynced = await syncAuthFileMappings(pulledAt);
+    authFilesSynced = await syncAuthFileMappings(new Date());
   } catch (error) {
-    const isTimeout = error instanceof Error && error.name === "AbortError";
-    authFilesWarning = isTimeout ? "auth-files sync timed out" : "auth-files sync failed";
-    console.warn("/api/sync auth-files sync failed:", error);
+    authFilesWarning = error instanceof Error && error.name === "AbortError"
+      ? "auth-files sync timed out"
+      : "auth-files sync failed";
+    console.warn("[sync] auth-files refresh failed:", authFilesWarning);
   }
 
-  if (rows.length === 0) {
-    return NextResponse.json({
-      status: "ok",
-      inserted: 0,
-      message: "No usage data",
-      authFilesSynced,
-      ...(authFilesWarning ? { authFilesWarning } : {})
-    });
-  }
-
-  let inserted = 0;
   try {
-    for (const chunk of chunkArray(rows, USAGE_INSERT_CHUNK_SIZE)) {
-      const insertedRows = await db
-        .insert(usageRecords)
-        .values(chunk)
-        .onConflictDoNothing({ target: [usageRecords.occurredAt, usageRecords.route, usageRecords.model, usageRecords.source] })
-        .returning({ id: usageRecords.id });
-      inserted += insertedRows.length;
+    const [instance] = await db
+      .select({ instanceId: usageCollectorInstances.instanceId })
+      .from(usageCollectorInstances)
+      .innerJoin(usageCollectorState, eq(usageCollectorState.instanceId, usageCollectorInstances.instanceId))
+      .where(and(
+        eq(usageCollectorInstances.enabled, true),
+        eq(usageCollectorState.state, "receiving"),
+        gt(usageCollectorState.updatedAt, new Date(Date.now() - 30_000))
+      ))
+      .orderBy(asc(usageCollectorInstances.instanceId))
+      .limit(1);
+
+    if (!instance) {
+      return NextResponse.json(
+        {
+          error: "No healthy CPA Collector heartbeat was found. Start the isolated Collector and retry.",
+          authFilesSynced,
+          ...(authFilesWarning ? { authFilesWarning } : {})
+        },
+        { status: 503 }
+      );
     }
-  } catch (dbError) {
-    console.error("/api/sync database insert failed:", dbError);
+
+    const [command] = await db
+      .insert(usageCollectorCommands)
+      .values({
+        instanceId: instance.instanceId,
+        command: "pull_now",
+        status: "pending",
+        requestedBy: request.method === "GET" ? "scheduled" : "dashboard"
+      })
+      .returning({ id: usageCollectorCommands.id });
+
     return NextResponse.json(
-      { error: "Internal Server Error" },
-      { status: 500 }
+      {
+        status: "queued",
+        commandId: Number(command.id),
+        inserted: 0,
+        attempted: 0,
+        authFilesSynced,
+        message: "CPA usage pull request queued for the Collector.",
+        ...(authFilesWarning ? { authFilesWarning } : {})
+      },
+      { status: 202 }
     );
+  } catch (error) {
+    console.error("Failed to enqueue CPA usage pull:", error instanceof Error ? error.message : "unknown error");
+    return NextResponse.json({ error: "Failed to enqueue Collector command" }, { status: 500 });
   }
-
-  // Vercel Postgres may return an empty array even when rows are inserted with RETURNING + ON CONFLICT DO NOTHING.
-  // Fall back to counting rows synced in this run (identified by the shared pulledAt timestamp) to avoid reporting 0.
-  if (inserted === 0 && rows.length > 0) {
-    const fallback = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(usageRecords)
-      .where(eq(usageRecords.syncedAt, pulledAt));
-    inserted = Number(fallback?.[0]?.count ?? 0);
-  }
-
-  return NextResponse.json({
-    status: "ok",
-    inserted,
-    attempted: rows.length,
-    authFilesSynced,
-    ...(authFilesWarning ? { authFilesWarning } : {})
-  });
 }
 
 export async function POST(request: Request) {
-  return performSync(request);
+  return enqueuePull(request);
 }
 
 export async function GET(request: Request) {
-  return performSync(request);
+  return enqueuePull(request);
 }

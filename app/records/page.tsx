@@ -618,6 +618,15 @@ export default function RecordsPage() {
         return 0;
       }
 
+      if (data.status === "queued") {
+        const authFilesWarning = typeof data.authFilesWarning === "string" ? data.authFilesWarning : "";
+        setSyncStatusType(authFilesWarning ? "warning" : "success");
+        setSyncStatus(authFilesWarning
+          ? `采集任务已提交，等待 Collector 处理；认证映射同步异常：${authFilesWarning}`
+          : "采集任务已提交，等待 Collector 处理");
+        return 0;
+      }
+
       const inserted = data.inserted ?? 0;
       const authFilesWarning = typeof data.authFilesWarning === "string" ? data.authFilesWarning : "";
 

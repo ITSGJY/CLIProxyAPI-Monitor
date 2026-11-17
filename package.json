@@ -6,12 +6,15 @@
   "packageManager": "pnpm@10.33.2",
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/migrate.mjs && next build",
+    "build": "next build",
     "build-only": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "db:generate": "drizzle-kit generate",
-    "db:push": "drizzle-kit push"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/collector/*.test.mjs",
+    "test:postgres": "node --test tests/postgres-schema.test.mjs",
+    "db:migrate": "node scripts/migrate.mjs",
+    "collector": "node scripts/collector.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

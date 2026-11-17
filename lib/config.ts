@@ -7,7 +7,6 @@ function normalizeBaseUrl(raw: string | undefined) {
 }
 
 const baseUrl = normalizeBaseUrl(process.env.CLIPROXY_API_BASE_URL);
-const usageBaseUrl = normalizeBaseUrl(process.env.USAGE_API_BASE_URL || process.env.CLIPROXY_API_BASE_URL);
 const password = process.env.PASSWORD || process.env.CLIPROXY_SECRET_KEY || "";
 const cronSecret = process.env.CRON_SECRET || "";
 
@@ -28,7 +27,6 @@ const timezone = normalizeTimezone(process.env.TIMEZONE);
 export const config = {
   cliproxy: {
     baseUrl,
-    usageBaseUrl,
     apiKey: process.env.CLIPROXY_SECRET_KEY || ""
   },
   postgresUrl: process.env.DATABASE_URL || "",
@@ -38,16 +36,17 @@ export const config = {
 };
 
 export function assertEnv() {
+  if (!config.postgresUrl) {
+    throw new Error("DATABASE_URL is missing");
+  }
+}
+
+export function assertCpaEnv() {
+  assertEnv();
   if (!config.cliproxy.apiKey) {
     throw new Error("CLIPROXY_SECRET_KEY is missing");
   }
   if (!config.cliproxy.baseUrl) {
     throw new Error("CLIPROXY_API_BASE_URL is missing");
-  }
-  if (!config.cliproxy.usageBaseUrl) {
-    throw new Error("USAGE_API_BASE_URL is missing");
-  }
-  if (!config.postgresUrl) {
-    throw new Error("DATABASE_URL is missing");
   }
 }

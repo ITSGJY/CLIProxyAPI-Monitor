@@ -1,6 +1,9 @@
-> [!CAUTION]
-> #### 注：CPA 上游已于 [v6.10.0](https://github.com/router-for-me/CLIProxyAPI/releases/tag/v6.10.0) 正式去除 `/usage` 接口，若希望继续使用本项目追踪用量，请一并配置 [adapter.js](#cpa-近端适配器adapterjs) 。
-> 或者回退 v6.9.49 或更早版本。
+> [!IMPORTANT]
+> This is the personal **Monitor Plus v2.0** fork. The original `/usage` adapter and Vercel polling flow are legacy compatibility code, not the new ingestion path.
+>
+> Phase 1 adds a disabled-by-default CPA v8 Pull-first Collector, PostgreSQL Durable Inbox, a global event identity ledger, monthly partitioned request events, versioned pricing and rebuildable rollup foundations. See [architecture](docs/architecture.md) and the [Phase 1 runbook](docs/phase1-runbook.md).
+>
+> Do not run the new Collector beside OMC, CPA Usage Keeper or CPA Manager Plus on the production CPA instance. CPA queue pulls are destructive; a separate single-consumer cutover is required.
 
 
 # CLIProxyAPI 数据看板
@@ -8,30 +11,25 @@
 基于 Next.js App Router + Drizzle + Postgres 的数据看板，用于自动拉取上游 CLIProxyAPI 使用数据，**持久化到数据库**，并进行数据可视化。
 
 ## 功能
-- `/api/sync` 拉取上游用量数据并去重入库（支持 GET/POST，有鉴权）
+- `/api/sync` 将拉取命令交给健康状态的 CPA v8 Collector（支持 GET/POST，有鉴权）
 - 前端表单可配置模型单价，亦支持从 models.dev 自动拉取价格信息（ [#17 @ZIC143](https://github.com/sxjeru/CLIProxyAPI-Monitor/pull/17) ）
-- 前端图表：日粒度折线图、小时粒度柱状图、模型费用列表等，支持时间范围、模型、Key、凭证筛选
+- 前端图表：日粒度折线图、小时粒度柱状图、模型费用列表等，支持时间范围、模型、Key、凭证筛选；新事件表的 UI 读取切换将在后续阶段完成
 - 访问密码保护
 
-## 部署到 Vercel
-1. Fork 本仓库，创建 Vercel 项目并关联
-2. 在 Vercel 环境变量中填写：
+## 部署与运行
 
-	| 环境变量 | 说明 | 备注 |
-	|---|---|---|
-	| CLIPROXY_SECRET_KEY | 登录 CLIProxyAPI 后台管理界面的密钥 | 无 |
-	| CLIPROXY_API_BASE_URL | 自部署的 CLIProxyAPI 根地址 | 如 `https://your-domain.com/` |
-	| USAGE_API_BASE_URL | usage 数据源接口 | 可选；不填时沿用 `CLIPROXY_API_BASE_URL`，接 adapter 时可单独指向 |
-	| DATABASE_URL | 数据库连接串（仅支持 Postgres） | 可直接使用 Neon |
-	| DATABASE_DRIVER | `pg` 或 `neon` | 可选；默认自动检测 |
-	| DATABASE_CA | DB 服务端 CA 证书 | 可选；PEM 原始内容或 Base64 编码均可 |
-	| PASSWORD | 访问密码，同时用于调用 `/api/sync` | 可选；留空默认使用 `CLIPROXY_SECRET_KEY` |
-	| CRON_SECRET | 使用 Vercel Cron 时需填写 | 任意字符串均可；建议长度 ≥ 16 |
+### Dashboard
 
-3. 部署后，可通过以下方式自动同步上游使用数据：
+- Node.js 24、pnpm 10 和 PostgreSQL 17。
+- 设置 `DATABASE_URL`、`PASSWORD`、`CRON_SECRET`；如需调用 CPA 管理接口，再设置 `CLIPROXY_API_BASE_URL` 和 `CLIPROXY_SECRET_KEY`。
+- 首次部署前，单独执行 `pnpm db:migrate`。`pnpm build` 只构建应用，不会隐式修改数据库。
+- Dashboard 可部署在 Vercel 或自有主机；当前 `vercel.json` 不启用自动 Cron。
 
-	- 默认启用 Vercel Cron（ Pro 可设每小时，Hobby 每天同步一次，请见 [vercel.json](https://github.com/sxjeru/CLIProxyAPI-Monitor/blob/main/vercel.json) ）
-	- Cloudflare Worker / 其他定时器定期请求同步：可见 [cf-worker-sync.js](https://github.com/sxjeru/CLIProxyAPI-Monitor/blob/main/cf-worker-sync.js)
+### CPA v8 Collector
+
+Collector 是独立 Node 进程，运行 `pnpm collector`。它默认关闭，Phase 1 只允许 loopback CPA 测试端点和名称包含 `test` 的 loopback PostgreSQL 数据库。配置方式见 [Phase 1 Runbook](docs/phase1-runbook.md)。
+
+`/api/sync` 只向健康的 Collector 提交一次拉取命令，不直接读取 CPA 队列。不要把 Collector 与 OMC、CPA Usage Keeper 或 CPA Manager Plus 同时连接到同一个生产 CPA 队列。
 
 ## 预览
 
@@ -45,7 +43,7 @@
 
 | 环境变量 | 说明 | 默认值 | 备注 |
 |---|---|---|---|
-| `DATABASE_POOL_MAX` | 连接池最大连接数 | `5` | 最小为 1 |
+| `DATABASE_POOL_MAX` | 连接池最大连接数 | `3` | 低内存 PostgreSQL 主机建议保持较小 |
 | `DATABASE_POOL_IDLE_TIMEOUT_MS` | 空闲连接超时时间 (毫秒) | `10000` | 超过此时间未使用的连接将被释放 |
 | `DATABASE_POOL_CONNECTION_TIMEOUT_MS` | 获取连接超时时间 (毫秒) | `5000` | 等待连接空闲的最长时间 |
 | `DATABASE_POOL_MAX_USES` | 连接最大使用次数 | `7500` | 单个连接在关闭前可执行的最大查询数 |
@@ -56,17 +54,16 @@
 ## Local DEV
 1. 安装依赖：`pnpm install`
 2. 修改环境变量：`cp .env.example .env`
-3. 创建表结构：`pnpm run db:push`
-4. 同步数据：GET/POST `/api/sync`（可选）
-5. 启动开发：`pnpm dev`
+3. 创建表结构：`pnpm db:migrate`（先确认 `DATABASE_URL` 指向隔离的测试库）
+4. 启动隔离的 CPA v8 Collector：`pnpm collector`（仅在配置好 loopback CPA 测试实例和 `cpa_monitor_test` 后）
+5. 提交拉取任务：GET/POST `/api/sync`（可选）
+6. 启动开发：`pnpm dev`
 
 ---
 
-## CPA 近端适配器（adapter.js）
+## Legacy CPA 适配器（仅兼容）
 
-由于 CPA 新版已移除 `/usage` 接口，可将 [adapter.js](adapter.js) 部署在 CPA 同端，实现从 CPA Redis 队列聚合 usage，还原接口功能，再自动提供给本项目的 `/api/sync` 拉取。
-
-部署脚本时可以添加反代以正常使用看板的同步功能，同时保持对原管理接口的访问。
+`adapter.js` 仅保留为历史兼容代码，默认拒绝启动。它面向旧版 `/usage` 适配流程，不适用于新的 CPA v8 采集链路。除非专门验证旧版兼容性，否则不要启用 `ENABLE_LEGACY_ADAPTER=true`；新版本应使用独立的 CPA v8 Collector。以下旧版反向代理与环境变量说明仅供历史部署排查，不属于 Monitor Plus v2.0 的推荐部署方式。
 
 ```
 your.domain {

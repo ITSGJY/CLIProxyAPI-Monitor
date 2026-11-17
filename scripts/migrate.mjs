@@ -144,15 +144,15 @@ async function runMigrations() {
     console.log("执行数据库迁移...");
     await migrate(db, { migrationsFolder: "./drizzle" });
     console.log("✓ 迁移完成");
-    
-    await pool.end();
-    process.exit(0);
   } catch (error) {
-    console.error("迁移失败:", error);
-    try { await pool.end(); } catch {}
-    // 不阻止构建继续
-    process.exit(0);
+    console.error("数据库迁移失败:", error);
+    process.exitCode = 1;
+  } finally {
+    await pool.end();
   }
 }
 
-runMigrations();
+runMigrations().catch((error) => {
+  console.error("数据库迁移初始化失败:", error);
+  process.exitCode = 1;
+});

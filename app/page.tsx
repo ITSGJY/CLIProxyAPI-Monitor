@@ -548,6 +548,17 @@ export default function DashboardPage() {
       } else {
         const now = new Date();
         const inserted = data.inserted ?? 0;
+        if (data.status === "queued") {
+          const authFilesWarning = typeof data.authFilesWarning === "string" ? data.authFilesWarning : "";
+          const queuedMessage = authFilesWarning
+            ? `采集任务已提交，等待 Collector 处理；认证映射同步异常：${authFilesWarning}`
+            : "采集任务已提交，等待 Collector 处理";
+          setSyncStatus(queuedMessage);
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem("lastSyncStatus", queuedMessage);
+          }
+          return;
+        }
         setLastSyncTime(now);
         if (typeof window !== "undefined") {
           window.localStorage.setItem("lastSyncTime", now.toISOString());
