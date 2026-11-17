@@ -87,6 +87,6 @@ The durable Inbox guarantees replay after the PostgreSQL transaction commits. It
 - [x] Lease bounds cover retry backoff and long polling intervals.
 - [x] Collector health is independently queryable and exposes batch-saturation warnings.
 - [x] Repeated-poll soak against isolated CPA v8.0.75 and PostgreSQL 17: 20 additional requests drained in batches; 28 distinct events durable in Inbox.
-- [ ] Final GitHub Actions run for the Phase 3 branch.
+- [x] Final GitHub Actions run for the Phase 3 branch (PostgreSQL 17, Collector tests, lint, TypeScript and production build).
 
 Production deployment, production database migration, disabling OMC/Keeper/CPAMP collectors and cutover approval are Phase 7 work, not Phase 3 acceptance.
