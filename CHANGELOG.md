@@ -2,6 +2,14 @@
 
 ## 2026-11-17
 
+- 推进 Phase 4 Processor 与计费处理流水线：
+  - 将 Inbox Processor 从 Collector 中独立出来，新增可单独启停的 Processor Worker。
+  - Inbox 改为逐条领取并续租，避免批次后部记录在排队期间 Lease 过期而被其他 Worker 重复领取。
+  - 保留全局事件身份账本、重复事件识别、失败指数退避及 Dead Letter 机制。
+  - 按事件发生时间匹配历史价格版本，分别计算普通输入、缓存输入和输出成本，避免将已包含在输出 Token 中的 reasoning tokens 重复计费。
+  - 新增独立 Rollup Worker，按时区重建近期小时/日聚合；小时与日聚合采用独立刷新周期，同一聚合维度使用 PostgreSQL Advisory Lock 防止多实例并发覆盖。
+  - Processor 与 Rollup Worker 均默认关闭，不影响 Phase 3 Collector 或生产 CPA。
+
 - 建立 Phase 1 PostgreSQL 采集基础：
   - 新增 CPA v8 RESP LPOP 主采集与 HTTP Usage Queue 回退模块。
   - 新增 PostgreSQL Durable Inbox、单 Worker Processor、全局事件身份账本和月度分区事件表。

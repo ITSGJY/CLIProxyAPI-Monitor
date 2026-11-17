@@ -16,10 +16,11 @@ import {
   processInboxBatch,
   pruneEmptyPullAttempts
 } from "../lib/collector/postgres-store.mjs";
+import { refreshUsageRollups } from "../lib/collector/rollups.mjs";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 
-test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safety", {
+test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplication and rollups", {
   skip: !testDatabaseUrl
 }, async () => {
   const parsedUrl = new URL(testDatabaseUrl);
@@ -140,8 +141,12 @@ test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safet
       "SELECT price_version_id FROM model_prices WHERE model = 'gpt-test'"
     );
     assert.ok(initialPrice.rows[0].price_version_id, "model price insert must create a version");
+    await scopedPool.query(
+      "UPDATE model_price_versions SET valid_from = now() - interval '5 minutes' WHERE id = $1",
+      [initialPrice.rows[0].price_version_id]
+    );
 
-    const eventTimestamp = new Date(Date.now() + 60_000).toISOString();
+    const eventTimestamp = new Date(Date.now() - 60_000).toISOString();
     const record = {
       timestamp: eventTimestamp,
       provider: "openai",
@@ -238,6 +243,7 @@ test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safet
     assert.equal(Number(pricedEvent.rows[0].cost_nanos), 140000);
     assert.equal(pricedEvent.rows[0].cost_currency, "USD");
     assert.equal(pricedEvent.rows[0].pricing_status, "priced");
+    assert.equal(Number(pricedEvent.rows[0].price_version_id), Number(initialPrice.rows[0].price_version_id));
 
     const storedApiKey = await scopedPool.query(
       "SELECT api_key_mask, raw_payload->>'api_key' AS raw_payload_api_key FROM usage_events WHERE request_id = $1",
@@ -274,6 +280,35 @@ test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safet
     assert.equal(Number(priceHistory.rows[0].versions), 2);
     assert.equal(Number(priceHistory.rows[0].closed_versions), 1);
 
+    const laterRecord = {
+      ...record,
+      timestamp: new Date(Date.now() + 60_000).toISOString(),
+      request_id: "phase1-request-after-price-change"
+    };
+    const laterAttempt = await createPullAttempt(scopedPool, {
+      instanceId: config.instanceId,
+      transport: "resp",
+      requestedCount: 10
+    });
+    await persistPulledBatch(scopedPool, {
+      attemptId: laterAttempt,
+      instanceId: config.instanceId,
+      transport: "resp",
+      items: [laterRecord]
+    });
+    const laterProcess = await processInboxBatch(scopedPool, {
+      instanceId: config.instanceId,
+      workerId: "worker-a",
+      batchSize: 10
+    });
+    assert.equal(laterProcess.processed, 1);
+    const laterPricedEvent = await scopedPool.query(
+      "SELECT price_version_id, cost_nanos FROM usage_events WHERE request_id = $1",
+      ["phase1-request-after-price-change"]
+    );
+    assert.notEqual(Number(laterPricedEvent.rows[0].price_version_id), Number(initialPrice.rows[0].price_version_id));
+    assert.equal(Number(laterPricedEvent.rows[0].cost_nanos), 180000);
+
     await scopedPool.query("DELETE FROM model_prices WHERE model = 'gpt-test'");
     const deletedPriceHistory = await scopedPool.query(
       "SELECT count(*) FILTER (WHERE valid_to IS NULL) AS open_versions FROM model_price_versions WHERE model = 'gpt-test'"
@@ -289,7 +324,7 @@ test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safet
         identities: Number(firstCounts.rows[0].identities),
         processed: Number(firstCounts.rows[0].processed)
       },
-      { events: 2, identities: 2, processed: 2 }
+      { events: 3, identities: 3, processed: 3 }
     );
 
     const partition = await scopedPool.query(
@@ -323,8 +358,76 @@ test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safet
       "SELECT (SELECT count(*) FROM usage_events) AS events, (SELECT duplicate_count FROM usage_event_identity WHERE request_id = $1) AS duplicates",
       ["phase1-request-001"]
     );
-    assert.equal(Number(duplicateCounts.rows[0].events), 2);
+    assert.equal(Number(duplicateCounts.rows[0].events), 3);
     assert.equal(Number(duplicateCounts.rows[0].duplicates), 1);
+
+    const rollups = await refreshUsageRollups(scopedPool, {
+      timezone: "UTC",
+      hourlyLookbackHours: 48,
+      dailyLookbackDays: 90
+    });
+    assert.equal(rollups.hourly.skipped, false);
+    assert.equal(rollups.daily.skipped, false);
+    const hourlyRollup = await scopedPool.query(
+      "SELECT request_count, input_tokens, output_tokens, total_tokens, cost_nanos, pricing_status FROM usage_rollups_hourly WHERE model = 'gpt-test' AND timezone = 'UTC'"
+    );
+    assert.ok(hourlyRollup.rowCount >= 1);
+    assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.request_count), 0), 3);
+    assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.input_tokens), 0), 300);
+    assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.output_tokens), 0), 75);
+    assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.total_tokens), 0), 390);
+    assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.cost_nanos), 0), 460000);
+    assert.ok(hourlyRollup.rows.every((row) => row.pricing_status === "priced"));
+    const dailyRollup = await scopedPool.query(
+      "SELECT request_count, cost_nanos FROM usage_rollups_daily WHERE model = 'gpt-test' AND timezone = 'UTC'"
+    );
+    assert.ok(dailyRollup.rowCount >= 1);
+    assert.equal(dailyRollup.rows.reduce((sum, row) => sum + Number(row.request_count), 0), 3);
+    assert.equal(dailyRollup.rows.reduce((sum, row) => sum + Number(row.cost_nanos), 0), 460000);
+    const checkpointStates = await scopedPool.query(
+      "SELECT rollup_name, state FROM usage_rollup_checkpoints WHERE timezone = 'UTC' ORDER BY rollup_name"
+    );
+    assert.deepEqual(checkpointStates.rows, [
+      { rollup_name: "usage_daily", state: "completed" },
+      { rollup_name: "usage_hourly", state: "completed" }
+    ]);
+
+    const lateRecord = {
+      ...record,
+      timestamp: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      request_id: "phase4-late-arrival"
+    };
+    const lateAttempt = await createPullAttempt(scopedPool, {
+      instanceId: config.instanceId,
+      transport: "http",
+      requestedCount: 10
+    });
+    await persistPulledBatch(scopedPool, {
+      attemptId: lateAttempt,
+      instanceId: config.instanceId,
+      transport: "http",
+      items: [lateRecord]
+    });
+    const lateProcess = await processInboxBatch(scopedPool, {
+      instanceId: config.instanceId,
+      workerId: "worker-a",
+      batchSize: 10
+    });
+    assert.equal(lateProcess.processed, 1);
+    await refreshUsageRollups(scopedPool, { timezone: "UTC", hourlyLookbackHours: 48, dailyLookbackDays: 90 });
+    const afterLateArrival = await scopedPool.query(
+      "SELECT sum(request_count) AS requests, sum(cost_nanos) AS cost, min(pricing_status) AS min_pricing, max(pricing_status) AS max_pricing FROM usage_rollups_daily WHERE model = 'gpt-test' AND timezone = 'UTC'"
+    );
+    assert.equal(Number(afterLateArrival.rows[0].requests), 4, "late-arriving event must be included in the rebuilt daily window");
+    assert.equal(Number(afterLateArrival.rows[0].cost), 460000, "unpriced late event must not invent cost");
+    assert.equal(afterLateArrival.rows[0].max_pricing, "partial");
+
+    await refreshUsageRollups(scopedPool, { timezone: "UTC", hourlyLookbackHours: 48, dailyLookbackDays: 90 });
+    const idempotentRollup = await scopedPool.query(
+      "SELECT sum(request_count) AS requests, sum(cost_nanos) AS cost FROM usage_rollups_daily WHERE model = 'gpt-test' AND timezone = 'UTC'"
+    );
+    assert.equal(Number(idempotentRollup.rows[0].requests), 4, "rebuilding the same window must not double count events");
+    assert.equal(Number(idempotentRollup.rows[0].cost), 460000);
 
     await scopedPool.query(`
       CREATE FUNCTION fail_identity_insert_for_test() RETURNS trigger
@@ -367,12 +470,45 @@ test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safet
       "SELECT (SELECT count(*) FROM usage_events) AS events, (SELECT count(*) FROM usage_event_identity WHERE request_id = 'force-rollback') AS identities, (SELECT status FROM usage_inbox WHERE pull_attempt_id = $1) AS inbox_status",
       [rollbackAttempt]
     );
-    assert.equal(Number(rollbackCounts.rows[0].events), 2);
+    assert.equal(Number(rollbackCounts.rows[0].events), 4);
     assert.equal(Number(rollbackCounts.rows[0].identities), 0);
     assert.equal(rollbackCounts.rows[0].inbox_status, "pending");
+    await scopedPool.query(
+      "UPDATE usage_inbox SET available_at = now() + interval '1 hour' WHERE pull_attempt_id = $1",
+      [rollbackAttempt]
+    );
 
     await scopedPool.query("DROP TRIGGER fail_identity_insert_for_test ON usage_event_identity");
     await scopedPool.query("DROP FUNCTION fail_identity_insert_for_test()");
+
+    const invalidAttempt = await createPullAttempt(scopedPool, {
+      instanceId: config.instanceId,
+      transport: "resp",
+      requestedCount: 10
+    });
+    await persistPulledBatch(scopedPool, {
+      attemptId: invalidAttempt,
+      instanceId: config.instanceId,
+      transport: "resp",
+      items: [{ model: "gpt-test", request_id: "missing-timestamp" }]
+    });
+    const invalidProcess = await processInboxBatch(scopedPool, {
+      instanceId: config.instanceId,
+      workerId: "worker-a",
+      batchSize: 10
+    });
+    assert.equal(invalidProcess.deadLettered, 1);
+    const deadLetter = await scopedPool.query(
+      "SELECT status, last_error_code FROM usage_inbox WHERE pull_attempt_id = $1",
+      [invalidAttempt]
+    );
+    assert.equal(deadLetter.rows[0].status, "dead_letter");
+    assert.equal(deadLetter.rows[0].last_error_code, "MISSING_EVENT_TIMESTAMP");
+
+    await assert.rejects(
+      processInboxBatch(scopedPool, { instanceId: config.instanceId, batchSize: 0 }),
+      /batchSize must be between 1 and 500/
+    );
 
     const interruptedAttempt = await createPullAttempt(scopedPool, {
       instanceId: config.instanceId,

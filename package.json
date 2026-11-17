@@ -15,7 +15,9 @@
     "test:postgres": "node --test tests/postgres-schema.test.mjs",
     "db:migrate": "node scripts/migrate.mjs",
     "collector": "node scripts/collector.mjs",
-    "collector:health": "node scripts/collector-health.mjs"
+    "collector:health": "node scripts/collector-health.mjs",
+    "processor": "node scripts/processor.mjs",
+    "rollup": "node scripts/rollup.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

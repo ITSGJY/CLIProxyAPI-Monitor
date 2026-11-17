@@ -20,7 +20,7 @@ Collector
   v
 usage_pull_attempts + usage_inbox (durable, sanitized payloads)
   |
-  | Phase 4: separate Processor worker, retry + lease
+  | Phase 4: independent Processor Worker, per-row lease/retry
   v
 usage_event_identity (global idempotency ledger)
   |
@@ -29,7 +29,7 @@ usage_events (monthly range partitions)
   |
   +--> versioned model prices
   |
-  +--> rebuildable hourly / daily rollups
+  +--> Phase 4 Rollup Worker --> rebuildable hourly / daily rollups
 ```
 
 The Collector is disabled by default. It has no default CPA host, port, management key or database URL. Phase 3 validation requires loopback CPA test endpoints and a loopback PostgreSQL database whose name contains `test`. Port 8317 is blocked unless `CPA_ALLOW_PRODUCTION_TARGET=true` is explicitly supplied; a non-test database additionally requires `COLLECTOR_ALLOW_PRODUCTION_DATABASE=true`. Both flags are reserved for a separately approved Phase 7 production cutover.
@@ -105,6 +105,8 @@ The dedicated PostgreSQL host has a 30-connection server limit and 1 GB RAM. Ini
 
 - Web application pool: maximum 3.
 - Collector pool: maximum 2.
+- Processor pool: maximum 2.
+- Rollup pool: maximum 1.
 - Collector health CLI pool: maximum 1, short-lived.
 - Migration / operator connections: temporary and serialized.
 
