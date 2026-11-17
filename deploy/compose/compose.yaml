@@ -1,0 +1,135 @@
+name: cliproxyapi-monitor
+
+services:
+  web:
+    image: ${MONITOR_IMAGE:?Set MONITOR_IMAGE to a pinned GHCR image tag}
+    container_name: cliproxyapi-monitor-web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_DRIVER: pg
+      DATABASE_URL: ${MONITOR_DATABASE_URL:?Set MONITOR_DATABASE_URL}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-3}
+      PASSWORD: ${MONITOR_PASSWORD:?Set MONITOR_PASSWORD}
+      TIMEZONE: ${TIMEZONE:-Asia/Shanghai}
+      CLIPROXY_API_BASE_URL: ${CLIPROXY_API_BASE_URL:-}
+      CLIPROXY_SECRET_KEY: ${CLIPROXY_SECRET_KEY:-}
+      CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET}
+    ports:
+      - "127.0.0.1:15300:3000"
+    networks:
+      - personal-cloud-hub
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /app/.next/cache:rw,noexec,nosuid,size=128m,uid=1001,gid=1001,mode=0755
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/auth/verify').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  processor:
+    image: ${MONITOR_IMAGE:?Set MONITOR_IMAGE to a pinned GHCR image tag}
+    container_name: cliproxyapi-monitor-processor
+    command: ["node", "scripts/processor.mjs"]
+    restart: unless-stopped
+    environment:
+      DATABASE_DRIVER: pg
+      DATABASE_URL: ${MONITOR_DATABASE_URL:?Set MONITOR_DATABASE_URL}
+      CPA_INSTANCE_ID: ${CPA_INSTANCE_ID:?Set CPA_INSTANCE_ID}
+      PROCESSOR_ENABLED: "true"
+      PROCESSOR_BATCH_SIZE: ${PROCESSOR_BATCH_SIZE:-25}
+      PROCESSOR_LEASE_SECONDS: ${PROCESSOR_LEASE_SECONDS:-120}
+      PROCESSOR_MAX_ATTEMPTS: ${PROCESSOR_MAX_ATTEMPTS:-8}
+      PROCESSOR_POLL_INTERVAL_MS: ${PROCESSOR_POLL_INTERVAL_MS:-1000}
+    networks:
+      - personal-cloud-hub
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  collector:
+    image: ${MONITOR_IMAGE:?Set MONITOR_IMAGE to a pinned GHCR image tag}
+    container_name: cliproxyapi-monitor-collector
+    profiles: ["collector"]
+    command: ["node", "scripts/collector.mjs"]
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      DATABASE_DRIVER: pg
+      DATABASE_URL: ${MONITOR_DATABASE_URL_HOST:-}
+      CPA_INSTANCE_ID: ${CPA_INSTANCE_ID:?Set CPA_INSTANCE_ID}
+      COLLECTOR_ENABLED: ${COLLECTOR_ENABLED:-false}
+      COLLECTOR_MODE: pull-first
+      CPA_USAGE_QUEUE: usage
+      CPA_REDIS_ADDR: 127.0.0.1:8317
+      CPA_MANAGEMENT_BASE_URL: http://127.0.0.1:8317
+      CPA_MANAGEMENT_KEY: ${CPA_MANAGEMENT_KEY:-}
+      CPA_ALLOW_PRODUCTION_TARGET: ${CPA_ALLOW_PRODUCTION_TARGET:-false}
+      COLLECTOR_ALLOW_PRODUCTION_DATABASE: ${COLLECTOR_ALLOW_PRODUCTION_DATABASE:-false}
+      COLLECTOR_POLL_INTERVAL_MS: ${COLLECTOR_POLL_INTERVAL_MS:-10000}
+      COLLECTOR_BATCH_SIZE: ${COLLECTOR_BATCH_SIZE:-100}
+      COLLECTOR_LEASE_SECONDS: ${COLLECTOR_LEASE_SECONDS:-60}
+      COLLECTOR_WORKER_ID: ${COLLECTOR_WORKER_ID:-monitor-collector}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  rollup:
+    image: ${MONITOR_IMAGE:?Set MONITOR_IMAGE to a pinned GHCR image tag}
+    container_name: cliproxyapi-monitor-rollup
+    command: ["node", "scripts/rollup.mjs"]
+    restart: unless-stopped
+    environment:
+      DATABASE_DRIVER: pg
+      DATABASE_URL: ${MONITOR_DATABASE_URL:?Set MONITOR_DATABASE_URL}
+      ROLLUP_ENABLED: "true"
+      ROLLUP_TIMEZONE: ${TIMEZONE:-Asia/Shanghai}
+      ROLLUP_HOURLY_LOOKBACK_HOURS: ${ROLLUP_HOURLY_LOOKBACK_HOURS:-48}
+      ROLLUP_DAILY_LOOKBACK_DAYS: ${ROLLUP_DAILY_LOOKBACK_DAYS:-90}
+      ROLLUP_HOURLY_INTERVAL_MS: ${ROLLUP_HOURLY_INTERVAL_MS:-60000}
+      ROLLUP_DAILY_INTERVAL_MS: ${ROLLUP_DAILY_INTERVAL_MS:-3600000}
+    networks:
+      - personal-cloud-hub
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  personal-cloud-hub:
+    external: true
+    name: personal-cloud-hub_default

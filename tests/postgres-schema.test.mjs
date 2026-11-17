@@ -555,6 +555,81 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     );
     assert.equal(Number(gapCount.rows[0].gaps), 1, "an uncertain destructive pull must create one explicit ingest gap");
 
+    // A committed Inbox batch must survive a Collector/Processor process restart.
+    const restartRecord = { ...record, request_id: "phase7-process-restart-durable" };
+    const restartAttempt = await createPullAttempt(scopedPool, {
+      instanceId: config.instanceId,
+      transport: "resp",
+      requestedCount: 10
+    });
+    await persistPulledBatch(scopedPool, {
+      attemptId: restartAttempt,
+      instanceId: config.instanceId,
+      transport: "resp",
+      items: [restartRecord]
+    });
+    await scopedPool.end();
+    scopedPool = new Pool({
+      connectionString: testDatabaseUrl,
+      options: "-c search_path=" + schemaName + ",public",
+      max: 2
+    });
+    const durableInbox = await scopedPool.query(
+      "SELECT status, payload->>'request_id' AS request_id FROM usage_inbox WHERE pull_attempt_id=$1",
+      [restartAttempt]
+    );
+    assert.equal(durableInbox.rowCount, 1);
+    assert.equal(durableInbox.rows[0].status, "pending");
+    assert.equal(durableInbox.rows[0].request_id, "phase7-process-restart-durable");
+    const afterRestart = await processInboxBatch(scopedPool, {
+      instanceId: config.instanceId,
+      workerId: "worker-after-restart",
+      batchSize: 10
+    });
+    assert.equal(afterRestart.processed, 1);
+    const restartEvent = await scopedPool.query(
+      "SELECT count(*)::int AS count FROM usage_events WHERE request_id='phase7-process-restart-durable'"
+    );
+    assert.equal(restartEvent.rows[0].count, 1);
+
+    // Expired per-row Processor leases are reclaimed by a replacement worker.
+    const leaseRecord = { ...record, request_id: "phase7-expired-processor-lease" };
+    const leaseAttempt = await createPullAttempt(scopedPool, {
+      instanceId: config.instanceId,
+      transport: "http",
+      requestedCount: 10
+    });
+    await persistPulledBatch(scopedPool, {
+      attemptId: leaseAttempt,
+      instanceId: config.instanceId,
+      transport: "http",
+      items: [leaseRecord]
+    });
+    await scopedPool.query(
+      `UPDATE usage_inbox SET status='processing', lease_owner='crashed-worker',
+         lease_expires_at=now()-interval '1 second', attempt_count=1 WHERE pull_attempt_id=$1`,
+      [leaseAttempt]
+    );
+    const reclaimed = await processInboxBatch(scopedPool, {
+      instanceId: config.instanceId,
+      workerId: "replacement-worker",
+      batchSize: 10
+    });
+    assert.equal(reclaimed.processed, 1);
+    const reclaimedEvent = await scopedPool.query(
+      "SELECT count(*)::int AS count FROM usage_events WHERE request_id='phase7-expired-processor-lease'"
+    );
+    assert.equal(reclaimedEvent.rows[0].count, 1);
+
+    // Terminate one PostgreSQL backend; the pool must reconnect on the next query.
+    const doomedClient = await scopedPool.connect();
+    const backend = await doomedClient.query("SELECT pg_backend_pid() AS pid");
+    await adminPool.query("SELECT pg_terminate_backend($1)", [backend.rows[0].pid]);
+    await assert.rejects(doomedClient.query("SELECT 1"));
+    doomedClient.release(true);
+    const recoveredConnection = await scopedPool.query("SELECT 1 AS recovered");
+    assert.equal(recoveredConnection.rows[0].recovered, 1);
+
     await markCollectorStopped(scopedPool, config.instanceId, "worker-a");
     const stoppedState = await scopedPool.query(
       `SELECT state.lease_owner, state.lease_expires_at, state.state, instance.enabled

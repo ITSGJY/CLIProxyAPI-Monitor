@@ -62,3 +62,73 @@ jobs:
 
       - name: Build Next.js application
         run: pnpm build-only
+
+      - name: Install Chromium for browser acceptance
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Apply migrations to the disposable CI database
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          DATABASE_DRIVER: pg
+        run: pnpm db:migrate
+
+      - name: Run authenticated Dashboard browser acceptance
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          DATABASE_DRIVER: pg
+          PASSWORD: phase7-browser-test-password
+          CRON_SECRET: phase7-browser-test-cron-secret
+          TIMEZONE: Asia/Shanghai
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
+        run: |
+          pnpm start > /tmp/cliproxyapi-monitor-next.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:3000/login >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3000/login >/dev/null
+          pnpm test:e2e
+
+  postgres-restart:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start disposable PostgreSQL 17
+        run: |
+          docker run -d --name phase7-postgres-restart \
+            -e POSTGRES_USER=phase7 \
+            -e POSTGRES_PASSWORD=phase7-test-password \
+            -e POSTGRES_DB=phase7_restart_test \
+            -p 127.0.0.1:55439:5432 \
+            --mount type=volume,src=phase7-postgres-restart-data,dst=/var/lib/postgresql/data \
+            postgres:17
+          for attempt in $(seq 1 45); do
+            if docker exec phase7-postgres-restart pg_isready -U phase7 -d phase7_restart_test >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec phase7-postgres-restart psql -U phase7 -d phase7_restart_test -v ON_ERROR_STOP=1 -c \
+            "CREATE TABLE restart_probe (id integer PRIMARY KEY, payload text NOT NULL); INSERT INTO restart_probe VALUES (1, 'durable');"
+
+      - name: Restart PostgreSQL and verify committed data
+        run: |
+          docker restart phase7-postgres-restart
+          for attempt in $(seq 1 45); do
+            if docker exec phase7-postgres-restart pg_isready -U phase7 -d phase7_restart_test >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          value=$(docker exec phase7-postgres-restart psql -U phase7 -d phase7_restart_test -Atc \
+            "SELECT payload FROM restart_probe WHERE id=1")
+          test "$value" = "durable"
+
+      - name: Remove disposable PostgreSQL
+        if: always()
+        run: |
+          docker rm -f phase7-postgres-restart 2>/dev/null || true
+          docker volume rm phase7-postgres-restart-data 2>/dev/null || true

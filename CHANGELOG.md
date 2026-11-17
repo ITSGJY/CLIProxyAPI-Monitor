@@ -332,3 +332,11 @@
 - Phase 6：发现并只读快照 Oh My CPA SQLite 历史库；新增可恢复、按源快照 SHA-256 绑定、幂等的 PostgreSQL 导入工具及运行审计表，完整保留 105 个历史模型价格版本。
 - 保留 17,132 条请求级历史事件、历史成本与定价状态；源价格版本 ID 与原始 event_key 单独留存，避免误关联目标价格外键或丢失重复键审计；排除 IP、转发地址、User-Agent、原始请求体、失败正文和响应头。
 - 在隔离 PostgreSQL 17 中完成全量导入、Token/费用/时间/定价对账及 Rollup/API 验证；未写入生产数据库，Phase 7 部署与切换仍未执行。
+
+
+## 2026-11-18 — Phase 7 preparation
+
+- 增加 Next.js standalone Docker 镜像、GHCR immutable SHA 标签发布、Compose 部署模板、浏览器验收和 PostgreSQL 17 重启持久性 CI。
+- 增加 Collector 进程重启、PostgreSQL backend 断连恢复、过期 Processor Lease 回收等故障验证。
+- 生产预检发现 OMC 与 Keeper 使用 CPA `SUBSCRIBE usage`；CPA 在有订阅者时不写 FIFO 队列。保持现有服务不动，明确切换前必须停止/禁用旧订阅者。
+- 将 CPA Usage Queue retention 从 300 秒通过 Management API v8 热更新至上限 3,600 秒，并备份修改前配置；尚未启用 Monitor 生产 Collector。

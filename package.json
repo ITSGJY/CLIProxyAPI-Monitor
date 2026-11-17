@@ -18,7 +18,8 @@
     "collector:health": "node scripts/collector-health.mjs",
     "processor": "node scripts/processor.mjs",
     "rollup": "node scripts/rollup.mjs",
-    "test:import": "node --test tests/omc-import.test.mjs"
+    "test:import": "node --test tests/omc-import.test.mjs",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
@@ -37,6 +38,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@tailwindcss/postcss": "^4.3.0",
     "@types/node": "^25.9.2",
     "@types/pg": "^8.20.0",
