@@ -82,7 +82,7 @@ The commands print a disabled message and open no database connection unless the
 - [x] Event normalization, global deduplication, historical price matching and token accounting are covered by PostgreSQL integration tests.
 - [x] Permanent malformed events reach Dead Letter; transient database failures remain retryable.
 - [x] Hourly and daily rollups rebuild recent windows with timezone support and concurrency locking.
-- [ ] Final CI on the Phase 4 branch (Collector unit tests, PostgreSQL 17 integration, lint, TypeScript and production build).
+- [x] GitHub Actions CI passed on commit `ab064d7` (Collector unit tests, PostgreSQL 17 integration, lint, TypeScript and production build). [Run #44111471549](https://github.com/ITSGJY/CLIProxyAPI-Monitor/actions/runs/44111471549).
 - [x] Independent worker E2E smoke: Processor consumed 2 synthetic CPA-shaped Inbox rows into 2 priced canonical events; Rollup Worker produced hourly and daily aggregates (2 requests, 280000 USD nanos). No CPA connection or production Collector was involved.
 
 Production CPA, production database, OMC/Keeper/CPAMP and production worker services remain unchanged. Their cutover is Phase 7 work.
