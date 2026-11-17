@@ -209,7 +209,7 @@ test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safet
       [firstAttempt]
     );
     assert.equal(inboxBeforeProcess.rows[0].status, "pending");
-    assert.equal(inboxBeforeProcess.rows[0].api_key, "[redacted]");
+    assert.equal(inboxBeforeProcess.rows[0].api_key, "****6789");
 
     const firstProcess = await processInboxBatch(scopedPool, {
       instanceId: config.instanceId,
@@ -226,6 +226,14 @@ test("Phase 1 PostgreSQL migration, durable inbox, partitioning and replay safet
     assert.equal(Number(pricedEvent.rows[0].cost_nanos), 140000);
     assert.equal(pricedEvent.rows[0].cost_currency, "USD");
     assert.equal(pricedEvent.rows[0].pricing_status, "priced");
+
+    const storedApiKey = await scopedPool.query(
+      "SELECT api_key_mask, raw_payload->>'api_key' AS raw_payload_api_key FROM usage_events WHERE request_id = $1",
+      ["phase1-request-001"]
+    );
+    assert.equal(storedApiKey.rows[0].api_key_mask, "****6789");
+    assert.equal(storedApiKey.rows[0].raw_payload_api_key, "****6789");
+    assert.equal(JSON.stringify(storedApiKey.rows[0]).includes("sk-test-secret"), false);
 
     await scopedPool.query(
       `INSERT INTO model_prices (model, input_price_per_1m, cached_input_price_per_1m, output_price_per_1m)

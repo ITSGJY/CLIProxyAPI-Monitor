@@ -31,7 +31,7 @@ test("normalization stores only a masked API key and redacted raw payload", () =
   assert.equal(normalized.inputTokens, 100);
   assert.equal(normalized.outputTokens, 20);
   assert.equal(normalized.totalTokens, 125);
-  assert.equal(normalized.rawPayload.api_key, "[redacted]");
+  assert.equal(normalized.rawPayload.api_key, "****6789");
   assert.equal(JSON.stringify(normalized.rawPayload).includes("sk-test-secret"), false);
 });
 
@@ -68,7 +68,7 @@ test("sanitizer redacts nested credentials and preserves non-secret metadata", (
   });
 
   assert.equal(payload.model, "gpt-test");
-  assert.equal(payload.auth.api_key, "[redacted]");
+  assert.equal(payload.auth.api_key, "****cret");
   assert.equal(payload.auth.authorization, "[redacted]");
   assert.equal(payload.tokens.input_tokens, 1);
 });
@@ -110,7 +110,7 @@ test("string fields containing inline API credentials are redacted", () => {
 });
 
 
-test("cookie, session and x-api-key fields are redacted recursively", () => {
+test("API key fields are masked while cookies and tokens are redacted recursively", () => {
   const payload = sanitizeUsagePayload({
     headers: {
       cookie: "session=private-session-value",
@@ -123,6 +123,7 @@ test("cookie, session and x-api-key fields are redacted recursively", () => {
   assert.equal(serialized.includes("private-session-value"), false);
   assert.equal(serialized.includes("private-cookie-value"), false);
   assert.equal(serialized.includes("private-api-key-value"), false);
+  assert.equal(payload.headers["x-api-key"], "****alue");
   assert.equal(serialized.includes("private-auth-token-value"), false);
 });
 
