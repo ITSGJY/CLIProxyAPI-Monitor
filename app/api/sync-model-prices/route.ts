@@ -259,12 +259,12 @@ export async function POST(request: Request) {
       db.select({ model: usageEvents.model }).from(usageEvents).groupBy(usageEvents.model),
       db.select({ model: usageRecords.model }).from(usageRecords).groupBy(usageRecords.model)
     ]);
-    const modelIds = Array.from(new Set(
+    const discoveredModelIds = Array.from(new Set(
       [...liveModelRows, ...legacyModelRows]
         .map((row) => row.model)
         .filter((model): model is string => typeof model === "string" && model.length > 0)
     )).sort();
-    const models = modelIds.map((id) => ({ id }));
+    const models = discoveredModelIds.map((id) => ({ id }));
 
     // 4. 匹配并收集要更新的价格
     let skippedCount = 0;

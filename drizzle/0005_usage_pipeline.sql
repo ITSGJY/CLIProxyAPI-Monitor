@@ -53,9 +53,6 @@ DECLARE
   should_version boolean := false;
   new_version_id bigint;
   existing_version_id bigint;
-  existing_input numeric;
-  existing_cached_input numeric;
-  existing_output numeric;
   new_valid_from timestamptz;
 BEGIN
   IF TG_OP = 'INSERT' THEN
