@@ -64,6 +64,9 @@ finally:
     if os.path.exists(temporary):
         os.unlink(temporary)
 PY
+# Exported shell variables outrank Compose's --env-file values. Keep the
+# in-memory value aligned with the atomically updated .env before Compose runs.
+export MONITOR_IMAGE="$NEW_IMAGE"
 rollback_application() {
   echo "deployment_failed=true; restoring_previous_image=${old_image}" >&2
   python3 - "$DEPLOY_DIR/.env" "$old_image" <<'PY'
@@ -87,6 +90,7 @@ finally:
     if os.path.exists(temporary):
         os.unlink(temporary)
 PY
+  export MONITOR_IMAGE="$old_image"
   services=()
   if [[ "$web_was_running" == "true" ]]; then services+=(web); fi
   if [[ "$processor_was_running" == "true" ]]; then services+=(processor); fi
