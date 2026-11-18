@@ -185,14 +185,11 @@ jobs:
       - name: Verify production migration runtime dependencies
         run: |
           IMAGE=ghcr.io/itsgjy/cliproxyapi-monitor:sha-${GITHUB_SHA::7}
-          docker run --rm "$IMAGE" node --input-type=module -e 'await import("drizzle-orm/node-postgres/migrator"); await import("pg"); console.log("PostgreSQL migration runtime verified")'      - name: Smoke test published container
+          docker run --rm "$IMAGE" node --input-type=module -e 'await import("drizzle-orm/node-postgres/migrator"); await import("pg"); console.log("PostgreSQL migration runtime verified")'
+      - name: Smoke test published container
         run: |
           IMAGE=ghcr.io/itsgjy/cliproxyapi-monitor:sha-${GITHUB_SHA::7}
-          docker run -d --name monitor-container-smoke \
-            -p 127.0.0.1:3000:3000 \
-            -e PASSWORD=phase7-container-smoke-password \
-            -e CRON_SECRET=phase7-container-smoke-cron \
-            "$IMAGE"
+          docker run -d --name monitor-container-smoke -p 127.0.0.1:3000:3000 -e PASSWORD=phase7-container-smoke-password -e CRON_SECRET=phase7-container-smoke-cron "$IMAGE"
           for attempt in $(seq 1 45); do
             if curl -fsS http://127.0.0.1:3000/login >/dev/null; then exit 0; fi
             sleep 1
@@ -202,7 +199,6 @@ jobs:
       - name: Remove smoke-test container
         if: always()
         run: docker rm -f monitor-container-smoke 2>/dev/null || true
-
   deploy-production:
     name: Deploy verified image to Oracle production
     needs: build-and-smoke
