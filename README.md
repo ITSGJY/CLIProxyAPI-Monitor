@@ -28,6 +28,8 @@
 
 查看 [架构决策](docs/architecture.md)、[Phase 3 Collector](docs/phase3-collector.md)、[Phase 4 Processor / Pricing](docs/phase4-processor.md)、[Phase 6 历史导入](docs/phase6-legacy-import.md) 和 [Phase 7 部署验收](docs/phase7-runbook.md)。
 
+持续集成、GHCR 多架构镜像发布、Oracle 生产部署和受限 SSH 机制见 [GitHub CI/CD 运维手册](docs/ci-cd.md)。
+
 ## 预览
 
 |   |   |
