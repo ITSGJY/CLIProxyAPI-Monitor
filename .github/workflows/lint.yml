@@ -208,13 +208,13 @@ jobs:
         run: |
           docker buildx imagetools create \
             --tag "$IMAGE:sha-${GITHUB_SHA::7}" \
-            "$IMAGE:sha-${GITHUB_SHA::7}-amd64" \
-            "$IMAGE:sha-${GITHUB_SHA::7}-arm64"
+            "$IMAGE:sha-${GITHUB_SHA}-amd64" \
+            "$IMAGE:sha-${GITHUB_SHA}-arm64"
           if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
             docker buildx imagetools create \
               --tag "$IMAGE:latest" \
-              "$IMAGE:sha-${GITHUB_SHA::7}-amd64" \
-              "$IMAGE:sha-${GITHUB_SHA::7}-arm64"
+              "$IMAGE:sha-${GITHUB_SHA}-amd64" \
+              "$IMAGE:sha-${GITHUB_SHA}-arm64"
           fi
       - name: Verify published manifest contains both architectures
         env:
