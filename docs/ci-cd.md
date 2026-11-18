@@ -17,7 +17,8 @@ Production deployment runs only after every validation and image job succeeds:
 - Push to `main`: automatic production deployment.
 - Feature branch: build and publish only; use `workflow_dispatch` with `deploy_production=true` to deploy that exact tested commit.
 - Pull requests: validation only; no GHCR push and no production secrets.
-- A production concurrency group prevents overlapping deployments.
+- A production concurrency group prevents overlapping deployments.- `main` is protected: pull requests must be up to date and pass both the PostgreSQL 17 restart check and the full test / browser-acceptance check. Force pushes and branch deletion are disabled; conversation resolution is required.
+- The `production` GitHub Environment permits deployment only from `main` and `feat/phase6-legacy-import`.
 
 ## Restricted deployment access
 
