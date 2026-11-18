@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { config, assertEnv } from "@/lib/config";
+import { config, assertCpaEnv } from "@/lib/config";
 
 export const runtime = "nodejs";
 
@@ -16,7 +16,7 @@ function authHeaders() {
 
 async function handleToggle(request: Request) {
   try {
-    assertEnv();
+    assertCpaEnv();
   } catch (error) {
     return NextResponse.json({ error: (error as Error).message }, { status: 501 });
   }
@@ -47,7 +47,7 @@ async function handleToggle(request: Request) {
 
 export async function GET() {
   try {
-    assertEnv();
+    assertCpaEnv();
   } catch (error) {
     return NextResponse.json({ error: (error as Error).message }, { status: 501 });
   }

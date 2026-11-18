@@ -1,0 +1,36 @@
+# Example only. Adjust User, Group, WorkingDirectory, Node path and EnvironmentFile
+# to the dedicated Monitor installation. Do not point this service at production
+# CPA until the separately approved single-consumer cutover is complete.
+[Unit]
+Description=CLIProxyAPI Monitor CPA Usage Collector
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=cliproxyapi-monitor
+Group=cliproxyapi-monitor
+WorkingDirectory=/opt/cliproxyapi-monitor
+EnvironmentFile=/etc/cliproxyapi-monitor/collector.env
+ExecStart=/usr/bin/node /opt/cliproxyapi-monitor/scripts/collector.mjs
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

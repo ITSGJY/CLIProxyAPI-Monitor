@@ -1,7 +1,22 @@
 # CHANGELOG
 
-## 2026-05-21
+## 2026-11-17
 
+- 推进 Phase 4 Processor 与计费处理流水线：
+  - 将 Inbox Processor 从 Collector 中独立出来，新增可单独启停的 Processor Worker。
+  - Inbox 改为逐条领取并续租，避免批次后部记录在排队期间 Lease 过期而被其他 Worker 重复领取。
+  - 保留全局事件身份账本、重复事件识别、失败指数退避及 Dead Letter 机制。
+  - 按事件发生时间匹配历史价格版本，分别计算普通输入、缓存输入和输出成本，避免将已包含在输出 Token 中的 reasoning tokens 重复计费。
+  - 新增独立 Rollup Worker，按时区重建近期小时/日聚合；小时与日聚合采用独立刷新周期，同一聚合维度使用 PostgreSQL Advisory Lock 防止多实例并发覆盖。
+  - Processor 与 Rollup Worker 均默认关闭，不影响 Phase 3 Collector 或生产 CPA。
+
+- 建立 Phase 1 PostgreSQL 采集基础：
+  - 新增 CPA v8 RESP LPOP 主采集与 HTTP Usage Queue 回退模块。
+  - 新增 PostgreSQL Durable Inbox、单 Worker Processor、全局事件身份账本和月度分区事件表。
+  - 新增价格版本、导入批次、采集缺口及可重建聚合的基础表。
+  - Collector 默认关闭，未配置明确测试目标时不会连接 CPA；生产端口 8317 默认受保护。
+- 将数据库迁移从构建流程中拆分，改为显式执行 `pnpm db:migrate`。
+- 增加 RESP、HTTP、规范化、身份去重和 PostgreSQL 事务集成测试。
 - 调整 [adapter.js](adapter.js) 的 route 字段映射：
   - 聚合写库前，`route`（适配器内部沿用 `endpoint` 字段）改为优先取 `api_key`，其次取 `auth_type`，最后才回退到原始 `endpoint`。
   - 修复上游队列中 `endpoint` 为 `POST /v1/chat/completions` 时被原样入库，导致 route 异常的问题。
@@ -306,3 +321,32 @@
 ## 2025-12-29
 
 - 初始化鉴权中间件、同步接口结构与基础文档，形成项目最初可用版本。
+
+## 2026-11-17
+
+- 实施 Phase 5 Dashboard Read Path：Overview、Explore、Records 切换至规范事件表；增加统一筛选、货币安全成本、价格覆盖率、稳定游标分页及 PII 安全的确定性散点抽样。
+- 通过增量迁移 0006 扩展 Rollup 的 API Key、Service Tier、Cache Creation 和定价覆盖维度；新增采集状态与缺口页面及 API。
+
+## 2026-11-18
+
+- Phase 6：发现并只读快照 Oh My CPA SQLite 历史库；新增可恢复、按源快照 SHA-256 绑定、幂等的 PostgreSQL 导入工具及运行审计表，完整保留 105 个历史模型价格版本。
+- 保留 17,132 条请求级历史事件、历史成本与定价状态；源价格版本 ID 与原始 event_key 单独留存，避免误关联目标价格外键或丢失重复键审计；排除 IP、转发地址、User-Agent、原始请求体、失败正文和响应头。
+- 在隔离 PostgreSQL 17 中完成全量导入、Token/费用/时间/定价对账及 Rollup/API 验证；未写入生产数据库，Phase 7 部署与切换仍未执行。
+
+
+## 2026-11-18 — Phase 7 preparation
+
+- 增加 Next.js standalone Docker 镜像、GHCR immutable SHA 标签发布、Compose 部署模板、浏览器验收和 PostgreSQL 17 重启持久性 CI；移除只适用于 Vercel 部署的 Analytics 注入，避免自托管环境请求不存在的 `/_vercel/insights/script.js`。
+- 增加 Collector 进程重启、PostgreSQL backend 断连恢复、过期 Processor Lease 回收等故障验证。
+- 生产预检发现 OMC 与 Keeper 使用 CPA `SUBSCRIBE usage`；CPA 在有订阅者时不写 FIFO 队列。保持现有服务不动，明确切换前必须停止/禁用旧订阅者。
+- 将 CPA Usage Queue retention 从 300 秒通过 Management API v8 热更新至上限 3,600 秒，并备份修改前配置；尚未启用 Monitor 生产 Collector。
+
+
+## 2026-11-18 — Native CPA RESP Subscription
+
+- 实现 CPA 原生 RESP `SUBSCRIBE usage` 长连接与 Pub/Sub 消息解析，支持 AUTH、订阅确认、消息帧分发、UNSUBSCRIBE、连接关闭与异步持久化错误处理。
+- Collector 默认改为 `COLLECTOR_MODE=auto`：优先加入 CPA 广播订阅；仅当服务端明确拒绝 `SUBSCRIBE` 时才切换 FIFO Pull。订阅断线不会盲目执行 LPOP。
+- 每个订阅事件先事务写入 PostgreSQL Inbox；订阅会话记录 received/persisted 计数。断线、进程异常或持久化失败会写入 `usage_ingest_gaps`，missing count 明确标为 unknown（CPA Pub/Sub 无 ACK/replay）。
+- 新增 `0008_resp_subscription.sql`，扩展 collector mode、pull attempt、Inbox 和 usage event transport 约束。
+- 增加 RESP fake-server 测试、PostgreSQL Inbox/Processor 集成测试、断线 gap 测试；44 项 Collector 测试、PostgreSQL、OMC 导入、typecheck、lint 和 Next.js build 全部通过。
+- 通过真实 Collector 进程 + 隔离 RESP fake CPA + PostgreSQL 17 完成端到端订阅验证：收到 1 条事件、Inbox 持久化 1 条、SIGTERM 后正常 UNSUBSCRIBE 并结束会话。

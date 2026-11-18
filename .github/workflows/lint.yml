@@ -1,17 +1,24 @@
-name: CI
+name: CI CD
 
 on:
   push:
     branches:
-      - "feat/**"
+      - "**"
   pull_request:
   workflow_dispatch:
+    inputs:
+      deploy_production:
+        description: Deploy this exact commit to Oracle production after all checks pass
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   validate:
+    name: Tests, PostgreSQL 17, lint, build and browser acceptance
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -32,30 +39,196 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Enable pnpm
         run: corepack enable
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
+      - name: Validate deployment helper scripts
+        run: bash -n deploy/scripts/monitor-deploy.sh && bash -n deploy/scripts/monitor-deploy-ssh-gate.sh
       - name: Run Collector unit tests
         run: pnpm test
-
       - name: Run PostgreSQL 17 integration tests
         run: pnpm test:postgres
-
+      - name: Run OMC SQLite import integration tests
+        run: pnpm test:import
       - name: Run lint
         run: pnpm lint
-
       - name: Run TypeScript checks
         run: pnpm typecheck
-
       - name: Build Next.js application
         run: pnpm build-only
+      - name: Install Chromium for browser acceptance
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Apply migrations to disposable CI database
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          DATABASE_DRIVER: pg
+        run: pnpm db:migrate
+      - name: Run authenticated Dashboard browser acceptance
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          DATABASE_DRIVER: pg
+          PASSWORD: phase7-browser-test-password
+          CRON_SECRET: phase7-browser-test-cron-secret
+          TIMEZONE: Asia/Shanghai
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
+        run: |
+          pnpm start > /tmp/cliproxyapi-monitor-next.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:3000/login >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3000/login >/dev/null
+          if ! pnpm test:e2e; then
+            cat /tmp/cliproxyapi-monitor-next.log
+            exit 1
+          fi
+      - name: Upload browser diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-playwright-diagnostics
+          path: test-results/
+          if-no-files-found: ignore
+
+  postgres-restart:
+    name: PostgreSQL 17 restart durability
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start disposable PostgreSQL 17
+        run: |
+          docker run -d --name phase7-postgres-restart \
+            -e POSTGRES_USER=phase7 \
+            -e POSTGRES_PASSWORD=phase7-test-password \
+            -e POSTGRES_DB=phase7_restart_test \
+            -p 127.0.0.1:55439:5432 \
+            --mount type=volume,src=phase7-postgres-restart-data,dst=/var/lib/postgresql/data \
+            postgres:17
+          for attempt in $(seq 1 45); do
+            if docker exec phase7-postgres-restart pg_isready -U phase7 -d phase7_restart_test >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec phase7-postgres-restart psql -U phase7 -d phase7_restart_test -v ON_ERROR_STOP=1 -c \
+            "CREATE TABLE restart_probe (id integer PRIMARY KEY, payload text NOT NULL); INSERT INTO restart_probe VALUES (1, 'durable');"
+      - name: Restart PostgreSQL and verify committed data
+        run: |
+          docker restart phase7-postgres-restart
+          for attempt in $(seq 1 45); do
+            if docker exec phase7-postgres-restart pg_isready -U phase7 -d phase7_restart_test >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          value=$(docker exec phase7-postgres-restart psql -U phase7 -d phase7_restart_test -Atc \
+            "SELECT payload FROM restart_probe WHERE id=1")
+          test "$value" = "durable"
+      - name: Remove disposable PostgreSQL
+        if: always()
+        run: |
+          docker rm -f phase7-postgres-restart 2>/dev/null || true
+          docker volume rm phase7-postgres-restart-data 2>/dev/null || true
+
+  build-and-smoke:
+    name: Build and publish immutable multi-architecture image
+    needs:
+      - validate
+      - postgres-restart
+    if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/phase6-legacy-import')) || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up QEMU for ARM64 builds
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/itsgjy/cliproxyapi-monitor
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build and publish immutable AMD64 and ARM64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Verify ARM64 manifest and runtime
+        run: |
+          IMAGE=ghcr.io/itsgjy/cliproxyapi-monitor:sha-${GITHUB_SHA::7}
+          docker buildx imagetools inspect "$IMAGE" | tee /tmp/monitor-image-manifest.txt
+          grep -q 'linux/arm64' /tmp/monitor-image-manifest.txt
+          docker run --rm --platform linux/arm64 "$IMAGE" node -e 'if (process.arch !== "arm64") process.exit(1); console.log("ARM64 runtime verified")'
+      - name: Smoke test published container
+        run: |
+          IMAGE=ghcr.io/itsgjy/cliproxyapi-monitor:sha-${GITHUB_SHA::7}
+          docker run -d --name monitor-container-smoke \
+            -p 127.0.0.1:3000:3000 \
+            -e PASSWORD=phase7-container-smoke-password \
+            -e CRON_SECRET=phase7-container-smoke-cron \
+            "$IMAGE"
+          for attempt in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:3000/login >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          docker logs monitor-container-smoke
+          exit 1
+      - name: Remove smoke-test container
+        if: always()
+        run: docker rm -f monitor-container-smoke 2>/dev/null || true
+
+  deploy-production:
+    name: Deploy verified image to Oracle production
+    needs: build-and-smoke
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.deploy_production)
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: cliproxyapi-monitor-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Configure restricted SSH identity
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.MONITOR_DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.MONITOR_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+      - name: Deploy immutable image over restricted SSH command
+        env:
+          DEPLOY_HOST: ${{ secrets.MONITOR_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_HOST"
+          ssh -p 22 -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "monitor-deploy@$DEPLOY_HOST" "deploy sha-${GITHUB_SHA::7}"

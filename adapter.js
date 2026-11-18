@@ -2,6 +2,11 @@ import { timingSafeEqual } from 'crypto';
 import { createServer } from 'http';
 import Redis from 'ioredis';
 
+if (process.env.ENABLE_LEGACY_ADAPTER !== "true") {
+console.error("Legacy CPA adapter disabled. Use the standalone v2 Collector; set ENABLE_LEGACY_ADAPTER=true only for an isolated legacy test.");
+process.exit(1);
+}
+
 /**
  * CPA Metrics Adapter
  * 

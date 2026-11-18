@@ -3,9 +3,9 @@ import * as nextHeaders from "next/headers";
 import * as DrizzleOrm from "drizzle-orm";
 import { config } from "@/lib/config";
 import { db } from "@/lib/db/client";
-import { modelPrices, usageRecords } from "@/lib/db/schema";
+import { modelPrices, usageEvents, usageRecords } from "@/lib/db/schema";
 
-const { inArray, desc } = DrizzleOrm as any;
+const { inArray } = DrizzleOrm as any;
 
 export const runtime = "nodejs";
 
@@ -110,26 +110,9 @@ export async function POST(request: Request) {
     syncInFlight = true;
     syncStartedAt = now;
 
-    if (!config.cliproxy.baseUrl) {
-      return NextResponse.json({ error: "服务端未配置 CLIPROXY_API_BASE_URL" }, { status: 500 });
-    }
-
     if (!config.postgresUrl) {
       return NextResponse.json({ error: "服务端未配置 DATABASE_URL" }, { status: 500 });
     }
-
-    // 从数据库获取最新的 route 值作为 API Key
-    const latestRecord = await db
-      .select({ route: usageRecords.route })
-      .from(usageRecords)
-      .orderBy(desc(usageRecords.id))
-      .limit(1);
-    
-    if (!latestRecord.length || !latestRecord[0].route) {
-      return NextResponse.json({ error: "数据库中没有可用的 API Key 记录" }, { status: 500 });
-    }
-    
-    const apiKey = latestRecord[0].route;
 
     // 1. 从 models.dev 获取价格数据
     const modelsDevHeaders: Record<string, string> = { "Accept": "application/json" };
@@ -271,21 +254,17 @@ export async function POST(request: Request) {
       return `命中计数=${meta.modeCount}/${meta.totalCount}；并列候选=${meta.tieCount}${meta.tieBreakApplied ? "（按首次出现裁决）" : ""}；首来源=${meta.firstSeenProvider}；来源集=${providers}；签名=${meta.signature}`;
     };
 
-    // 3. 从 CLIProxyAPI 获取当前模型列表
-    // 使用 OpenAI 兼容的 /v1/models 端点而非管理 API
-    const baseUrlWithoutManagement = config.cliproxy.baseUrl.replace(/\/v0\/management\/?$/, "");
-    const modelsUrl = `${baseUrlWithoutManagement}/v1/models`;
-    const cliproxyRes = await fetch(modelsUrl, {
-      headers: { "Authorization": `Bearer ${apiKey}`, "Accept": "application/json" },
-      cache: "no-store"
-    });
-
-    if (!cliproxyRes.ok) {
-      return NextResponse.json({ error: `无法获取模型列表: ${cliproxyRes.status}` }, { status: 502 });
-    }
-
-    const cliproxyData = await cliproxyRes.json();
-    const models: { id: string }[] = cliproxyData.data || [];
+    // 3. 从本地事件表获取实际使用过的模型；不再从 usage_records.route 读取 API Key。
+    const [liveModelRows, legacyModelRows] = await Promise.all([
+      db.select({ model: usageEvents.model }).from(usageEvents).groupBy(usageEvents.model),
+      db.select({ model: usageRecords.model }).from(usageRecords).groupBy(usageRecords.model)
+    ]);
+    const discoveredModelIds = Array.from(new Set(
+      [...liveModelRows, ...legacyModelRows]
+        .map((row) => row.model)
+        .filter((model): model is string => typeof model === "string" && model.length > 0)
+    )).sort();
+    const models = discoveredModelIds.map((id) => ({ id }));
 
     // 4. 匹配并收集要更新的价格
     let skippedCount = 0;

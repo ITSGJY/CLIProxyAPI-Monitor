@@ -29,7 +29,9 @@ type OverviewAPIResponse = {
   timezone?: string;
   lastSyncAt?: string | null;
   meta?: OverviewMeta;
-  filters?: { models: string[]; routes: string[]; names: string[] };
+  filters?: { models: string[]; routes: string[]; names: string[]; providers?: string[]; serviceTiers?: string[] };
+  costByCurrency?: Array<{currency:string;costNanos:number | null}>;
+  pricingCoverage?: {priced:number;unpriced:number;partial:number;rate:number};
 };
 
 type PriceForm = {
@@ -166,6 +168,8 @@ export default function DashboardPage() {
   const [bucketTimezone, setBucketTimezone] = useState<string | undefined>(undefined);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [overviewEmpty, setOverviewEmpty] = useState(false);
+  const [pricingCoverage, setPricingCoverage] = useState<OverviewAPIResponse["pricingCoverage"]>();
+  const [costByCurrency, setCostByCurrency] = useState<OverviewAPIResponse["costByCurrency"]>([]);
   const [loadingOverview, setLoadingOverview] = useState(true);
   const [customPickerOpen, setCustomPickerOpen] = useState(false);
   const [customDraftStart, setCustomDraftStart] = useState(fallbackRange.start);
@@ -182,6 +186,14 @@ export default function DashboardPage() {
   const [filterModel, setFilterModel] = useState<string | undefined>(undefined);
   const [filterRoute, setFilterRoute] = useState<string | undefined>(undefined);
   const [filterName, setFilterName] = useState<string | undefined>(undefined);
+  const [providerFilterInput, setProviderFilterInput] = useState("");
+  const [serviceTierFilterInput, setServiceTierFilterInput] = useState("");
+  const [providerFilter, setProviderFilter] = useState<string | undefined>();
+  const [serviceTierFilter, setServiceTierFilter] = useState<string | undefined>();
+  const [statusFilterInput, setStatusFilterInput] = useState("");
+  const [currencyFilterInput, setCurrencyFilterInput] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string | undefined>();
+  const [currencyFilter, setCurrencyFilter] = useState<string | undefined>();
   const [page, setPage] = useState(1);
   const [form, setForm] = useState<PriceForm>({ model: "", inputPricePer1M: "", cachedInputPricePer1M: "", outputPricePer1M: "" });
   const [status, setStatus] = useState<string | null>(null);
@@ -548,6 +560,17 @@ export default function DashboardPage() {
       } else {
         const now = new Date();
         const inserted = data.inserted ?? 0;
+        if (data.status === "queued") {
+          const authFilesWarning = typeof data.authFilesWarning === "string" ? data.authFilesWarning : "";
+          const queuedMessage = authFilesWarning
+            ? `采集任务已提交，等待 Collector 处理；认证映射同步异常：${authFilesWarning}`
+            : "采集任务已提交，等待 Collector 处理";
+          setSyncStatus(queuedMessage);
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem("lastSyncStatus", queuedMessage);
+          }
+          return;
+        }
         setLastSyncTime(now);
         if (typeof window !== "undefined") {
           window.localStorage.setItem("lastSyncTime", now.toISOString());
@@ -794,6 +817,10 @@ export default function DashboardPage() {
         if (filterModel) params.set("model", filterModel);
         if (filterRoute) params.set("route", filterRoute);
         if (filterName) params.set("name", filterName);
+        if (providerFilter) params.set("provider", providerFilter);
+        if (serviceTierFilter) params.set("serviceTier", serviceTierFilter);
+        if (statusFilter) params.set("status", statusFilter);
+        if (currencyFilter) params.set("currency", currencyFilter);
         params.set("page", String(page));
         params.set("pageSize", "500");
 
@@ -821,6 +848,8 @@ export default function DashboardPage() {
         const data: OverviewAPIResponse = await res.json();
         if (!active) return;
         setOverview(data.overview ?? null);
+        setPricingCoverage(data.pricingCoverage);
+        setCostByCurrency(data.costByCurrency ?? []);
         setBucketTimezone(data.timezone);
         setOverviewEmpty(Boolean(data.empty));
         setOverviewError(null);
@@ -850,7 +879,7 @@ export default function DashboardPage() {
       active = false;
       controller.abort();
     };
-  }, [rangeMode, customStart, customEnd, rangeDays, filterModel, filterRoute, filterName, page, refreshTrigger, ready]);
+  }, [rangeMode, customStart, customEnd, rangeDays, filterModel, filterRoute, filterName, providerFilter, serviceTierFilter, statusFilter, currencyFilter, page, refreshTrigger, ready]);
 
   const overviewData = overview;
   const showEmpty = overviewEmpty || !overview;
@@ -926,7 +955,7 @@ export default function DashboardPage() {
 
   const sortedModelsByCost = useMemo(() => {
     const models = overviewData?.models ?? [];
-    return [...models].sort((a, b) => b.cost - a.cost);
+    return [...models].sort((a, b) => (b.cost ?? -1) - (a.cost ?? -1));
   }, [overviewData]);
 
   // 按 tokens 降序为每个模型分配固定颜色索引，排名越高颜色越靠前
@@ -1150,6 +1179,13 @@ export default function DashboardPage() {
 
   return (
     <main className={`min-h-screen px-6 py-8 transition-colors ${darkMode ? "bg-slate-900 text-slate-100" : "bg-slate-50 text-slate-900"}`}>
+      {pricingCoverage ? (
+        <section className={`mb-5 flex flex-wrap items-center gap-4 rounded-xl border px-4 py-3 text-sm ${darkMode ? "border-slate-700 bg-slate-800/70" : "border-slate-200 bg-white"}`}>
+          <div><span className="text-xs text-slate-500">价格覆盖率</span><div className="text-lg font-semibold">{(pricingCoverage.rate * 100).toFixed(2)}%</div></div>
+          <div><span className="text-xs text-slate-500">已定价 / 未定价 / 部分</span><div className="font-medium">{pricingCoverage.priced} / {pricingCoverage.unpriced} / {pricingCoverage.partial}</div></div>
+          <div className="min-w-0 flex-1"><span className="text-xs text-slate-500">按币种累计成本（不跨币种相加）</span><div className="flex flex-wrap gap-3 font-medium">{(costByCurrency ?? []).map((item) => <span key={item.currency}>{item.currency} {item.costNanos === null ? "未定价" : (item.costNanos / 1e9).toFixed(6)}</span>)}</div></div>
+        </section>
+      ) : null}
       {overviewError ? (
         <div className="mb-6 flex items-start gap-3 rounded-xl border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm text-red-400">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
@@ -1495,13 +1531,17 @@ export default function DashboardPage() {
               setPage(1);
             }}
           />
+          <input value={providerFilterInput} onChange={(event) => setProviderFilterInput(event.target.value)} placeholder="Provider" className={`w-28 rounded-lg border px-3 py-2 text-xs ${darkMode ? "border-slate-700 bg-slate-800 text-slate-200" : "border-slate-300 bg-white text-slate-700"}`} />
+          <input value={serviceTierFilterInput} onChange={(event) => setServiceTierFilterInput(event.target.value)} placeholder="Service Tier" className={`w-32 rounded-lg border px-3 py-2 text-xs ${darkMode ? "border-slate-700 bg-slate-800 text-slate-200" : "border-slate-300 bg-white text-slate-700"}`} />
+          <select value={statusFilterInput} onChange={(event) => setStatusFilterInput(event.target.value)} className={`rounded-lg border px-3 py-2 text-xs ${darkMode ? "border-slate-700 bg-slate-800 text-slate-200" : "border-slate-300 bg-white text-slate-700"}`}><option value="">全部状态</option><option value="success">成功</option><option value="error">失败</option></select>
+          <input value={currencyFilterInput} onChange={(event) => setCurrencyFilterInput(event.target.value)} placeholder="币种" className={`w-20 rounded-lg border px-3 py-2 text-xs ${darkMode ? "border-slate-700 bg-slate-800 text-slate-200" : "border-slate-300 bg-white text-slate-700"}`} />
           <button
-            onClick={applyFilters}
+            onClick={() => { setProviderFilter(providerFilterInput.trim() || undefined); setServiceTierFilter(serviceTierFilterInput.trim() || undefined); setStatusFilter(statusFilterInput.trim() || undefined); setCurrencyFilter(currencyFilterInput.trim().toUpperCase() || undefined); setPage(1); }}
             className={`rounded-lg border px-3 py-1.5 text-sm font-semibold transition ${darkMode ? "border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-500" : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"}`}
           >
             应用筛选
           </button>
-          {(filterModel || filterRoute || filterName) ? (
+          {(filterModel || filterRoute || filterName || providerFilter || serviceTierFilter || statusFilter || currencyFilter) ? (
             <button
               onClick={() => {
                 setFilterModelInput("");
@@ -1510,6 +1550,12 @@ export default function DashboardPage() {
                 setFilterModel(undefined);
                 setFilterRoute(undefined);
                 setFilterName(undefined);
+                setProviderFilterInput("");
+                setServiceTierFilterInput("");
+                setProviderFilter(undefined);
+                setServiceTierFilter(undefined);
+                setStatusFilterInput(""); setCurrencyFilterInput("");
+                setStatusFilter(undefined); setCurrencyFilter(undefined);
                 setPage(1);
               }}
               className={`rounded-lg border px-3 py-1.5 text-sm transition ${darkMode ? "border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-500" : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"}`}
@@ -1622,8 +1668,8 @@ export default function DashboardPage() {
             
             {/* 预估费用 */}
             <div className={`animate-card-float rounded-2xl p-5 shadow-sm ring-1 transition-all duration-200 ${darkMode ? "bg-gradient-to-br from-amber-500/20 to-amber-700/10 ring-amber-400/40 hover:shadow-lg hover:shadow-amber-500/20 hover:ring-amber-400/60" : "bg-amber-50 ring-amber-200 hover:shadow-lg hover:ring-amber-300"}`} style={{ animationDelay: '0.15s' }}>
-              <div className="text-sm uppercase tracking-wide text-amber-400">预估费用</div>
-              <div className={`mt-3 text-2xl font-semibold ${darkMode ? "text-white" : "text-slate-900"}`}>{formatCurrency(overviewData.totalCost)}</div>
+              <div className="text-sm uppercase tracking-wide text-amber-400">预估费用（USD）</div>
+              <div className={`mt-3 text-2xl font-semibold ${darkMode ? "text-white" : "text-slate-900"}`}>{!costByCurrency?.some((item) => item.currency === "USD") ? "—" : overviewData.totalCost === null ? "未定价" : formatCurrency(overviewData.totalCost)}</div>
               <p className={`mt-2 text-xs ${darkMode ? "text-amber-300/70" : "text-amber-700/70"}`}>基于模型价格</p>
             </div>
 
@@ -1904,7 +1950,7 @@ export default function DashboardPage() {
                     .sort((a, b) => b[pieMode] - a[pieMode])
                     .map((item, sortedIndex) => {
                       const originalIndex = overviewData.models.findIndex(m => m.model === item.model);
-                      const total = overviewData.models.reduce((sum, m) => sum + m[pieMode], 0);
+                      const total = overviewData.models.reduce((sum, m) => sum + Number(m[pieMode] ?? 0), 0);
                       const percent = total > 0 ? (item[pieMode] / total) * 100 : 0;
                       const isHighlighted = hoveredPieIndex === null || hoveredPieIndex === originalIndex;
                       return (
@@ -2142,8 +2188,8 @@ export default function DashboardPage() {
         ) : (
           <div className={`animate-card-float rounded-2xl p-6 shadow-sm ring-1 lg:col-span-2 ${darkMode ? "bg-slate-800/50 ring-slate-700" : "bg-white ring-slate-200"}`} style={{ animationDelay: '0.3s' }}>
             <div className="flex items-center justify-between">
-              <h2 className={`text-lg font-semibold ${darkMode ? "text-white" : "text-slate-900"}`}>预估模型费用</h2>
-              <span className={`text-xs ${darkMode ? "text-slate-400" : "text-slate-500"}`}>基于配置的价格</span>
+              <h2 className={`text-lg font-semibold ${darkMode ? "text-white" : "text-slate-900"}`}>预估模型费用（USD）</h2>
+              <span className={`text-xs ${darkMode ? "text-slate-400" : "text-slate-500"}`}>基于配置的价格 · USD</span>
             </div>
             <div className="scrollbar-slim mt-3 max-h-80 min-h-[14rem] space-y-2 overflow-y-auto">
               {showEmpty ? (
@@ -2166,7 +2212,7 @@ export default function DashboardPage() {
                       {formatNumberWithCommas(model.requests)} 请求数 • {formatCompactNumber(model.tokens)} tokens
                     </p>
                   </div>
-                  <div className={`text-base font-semibold ${darkMode ? "text-emerald-400" : "text-emerald-600"}`}>{formatCurrency(model.cost)}</div>
+                  <div className={`text-base font-semibold ${darkMode ? "text-emerald-400" : "text-emerald-600"}`}>{model.cost === null ? "未定价" : formatCurrency(model.cost)}</div>
                 </div>
               ))
               )}
@@ -2650,7 +2696,7 @@ export default function DashboardPage() {
                     .sort((a, b) => b[pieMode] - a[pieMode])
                     .map((item) => {
                       const originalIndex = overviewData.models.findIndex(m => m.model === item.model);
-                      const total = overviewData.models.reduce((sum, m) => sum + m[pieMode], 0);
+                      const total = overviewData.models.reduce((sum, m) => sum + Number(m[pieMode] ?? 0), 0);
                       const percent = total > 0 ? (item[pieMode] / total) * 100 : 0;
                       const isHighlighted = hoveredPieIndex === null || hoveredPieIndex === originalIndex;
                       return (

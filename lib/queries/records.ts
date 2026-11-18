@@ -1,318 +1,120 @@
 import * as DrizzleOrm from "drizzle-orm";
-const { and, asc, desc, eq, gte, lte, sql } = DrizzleOrm as any;
 import { db } from "@/lib/db/client";
-import { authFileMappings, modelPrices, usageRecords } from "@/lib/db/schema";
+import { usageEvents, authFileMappings } from "@/lib/db/schema";
+import { dashboardWhere, getDashboardFilterOptions, type DashboardFilters } from "./dashboard-common";
 
-export type UsageRecordRow = {
-  id: number;
-  occurredAt: Date;
-  route: string;
-  source: string;
-  credentialName: string;
-  provider: string | null;
-  model: string;
-  totalTokens: number;
-  inputTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  cachedTokens: number;
-  isError: boolean;
-  cost: number;
-};
+const { and, asc, desc, eq, sql } = DrizzleOrm as any;
 
-export type UsageRecordCursor = {
-  lastValue: string | number;
-  lastId: number;
-};
-
-type SortField =
-  | "occurredAt"
-  | "model"
-  | "route"
-  | "source"
-  | "totalTokens"
-  | "inputTokens"
-  | "outputTokens"
-  | "reasoningTokens"
-  | "cachedTokens"
-  | "cost"
-  | "isError";
+type SortField = "occurredAt" | "model" | "route" | "source" | "totalTokens" | "inputTokens" | "outputTokens" | "reasoningTokens" | "cachedTokens" | "cost" | "isError";
 type SortOrder = "asc" | "desc";
 export type SortKey = { field: SortField; order: SortOrder };
+export type UsageRecordCursor = { v: 1; sort: SortKey[]; values: Array<string | number | boolean | null>; eventId: number };
 
-// 注意：必须使用 sql.raw() 来引用外部表字段，否则 Drizzle 会丢失表名前缀
-// 反斜杠需要双重转义：JS 字符串转义 + PostgreSQL E'' 字符串转义
-const COST_EXPR = sql<number>`coalesce(
-  -- 尝试精确匹配
-  (select (
-    (greatest(${sql.raw('"usage_records"."input_tokens"')} - ${sql.raw('"usage_records"."cached_tokens"')}, 0)::numeric / 1000000) * mp.input_price_per_1m
-    + (${sql.raw('"usage_records"."cached_tokens"')}::numeric / 1000000) * mp.cached_input_price_per_1m
-    + ((${sql.raw('"usage_records"."output_tokens"')} + ${sql.raw('"usage_records"."reasoning_tokens"')})::numeric / 1000000) * mp.output_price_per_1m
-  )
-  from model_prices mp
-  where mp.model = ${sql.raw('"usage_records"."model"')}
-  limit 1),
-  -- 如果精确匹配失败，尝试通配符匹配（按非通配符字符数量降序选择最具体的）
-  (select (
-    (greatest(${sql.raw('"usage_records"."input_tokens"')} - ${sql.raw('"usage_records"."cached_tokens"')}, 0)::numeric / 1000000) * mp.input_price_per_1m
-    + (${sql.raw('"usage_records"."cached_tokens"')}::numeric / 1000000) * mp.cached_input_price_per_1m
-    + ((${sql.raw('"usage_records"."output_tokens"')} + ${sql.raw('"usage_records"."reasoning_tokens"')})::numeric / 1000000) * mp.output_price_per_1m
-  )
-  from model_prices mp
-  where mp.model like '%*%'
-    and ${sql.raw('"usage_records"."model"')} ~ (
-      '^' ||
-      regexp_replace(
-        regexp_replace(
-          mp.model,
-          E'([.+?^$()\\\\[\\\\]{}|\\\\\\\\-])',
-          E'\\\\\\\\\\\\1',
-          'g'
-        ),
-        E'\\\\*',
-        '.*',
-        'g'
-      )
-      || '$'
-    )
-  order by length(replace(mp.model, '*', '')) desc, length(mp.model) desc
-  limit 1),
-  -- 如果都没匹配，返回 0
-  0
-)`;
-
-const CREDENTIAL_NAME_EXPR = sql<string>`coalesce(nullif(${authFileMappings.name}, ''), nullif(${usageRecords.source}, ''), '-')`;
-
-function getSortExpr(sortField: SortField): any {
-  switch (sortField) {
-    case "model": return usageRecords.model;
-    case "route": return usageRecords.route;
-    case "source": return CREDENTIAL_NAME_EXPR;
-    case "totalTokens": return usageRecords.totalTokens;
-    case "inputTokens": return usageRecords.inputTokens;
-    case "outputTokens": return usageRecords.outputTokens;
-    case "reasoningTokens": return usageRecords.reasoningTokens;
-    case "cachedTokens": return usageRecords.cachedTokens;
-    case "cost": return COST_EXPR;
-    case "isError": return usageRecords.isError;
-    case "occurredAt":
-    default: return usageRecords.occurredAt;
-  }
-}
-
-function parseCursor(input: string | null): UsageRecordCursor | null {
-  if (!input) return null;
+function encodeCursor(value: UsageRecordCursor) { return Buffer.from(JSON.stringify(value)).toString("base64url"); }
+function decodeCursor(value: string | null): UsageRecordCursor | null {
+  if (!value) return null;
   try {
-    const raw = Buffer.from(input, "base64").toString("utf8");
-    const parsed = JSON.parse(raw) as UsageRecordCursor;
-    if (parsed && typeof parsed.lastId === "number") {
-      return parsed;
-    }
-    return null;
-  } catch {
-    return null;
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (parsed?.v !== 1 || !Number.isSafeInteger(parsed.eventId) || parsed.eventId <= 0 || !Array.isArray(parsed.sort) || !Array.isArray(parsed.values) || parsed.sort.length !== parsed.values.length || parsed.sort.length === 0) return null;
+    if (parsed.values.some((value: unknown) => value !== null && !["string", "number", "boolean"].includes(typeof value))) return null;
+    const fields = ["occurredAt", "model", "route", "source", "totalTokens", "inputTokens", "outputTokens", "reasoningTokens", "cachedTokens", "cost", "isError"];
+    if (parsed.sort.some((item: any) => !fields.includes(item.field) || !["asc", "desc"].includes(item.order))) return null;
+    if (parsed.sort.some((item: any, index: number) => item.field === "occurredAt" && (typeof parsed.values[index] !== "string" || !Number.isFinite(new Date(parsed.values[index]).getTime())))) return null;
+    return parsed;
+  } catch { return null; }
+}
+
+function sortExpr(field: SortField): any {
+  switch (field) {
+    case "model": return usageEvents.model;
+    case "route": return sql`coalesce(${usageEvents.apiKeyMask}, '')`;
+    case "source": return sql`coalesce(nullif(${authFileMappings.name}, ''), nullif(${usageEvents.source}, ''), nullif(${usageEvents.authIndex}, ''), '-')`;
+    case "totalTokens": return usageEvents.totalTokens;
+    case "inputTokens": return usageEvents.inputTokens;
+    case "outputTokens": return usageEvents.outputTokens;
+    case "reasoningTokens": return usageEvents.reasoningTokens;
+    case "cachedTokens": return usageEvents.cachedTokens;
+    case "cost": return sql`coalesce(${usageEvents.costNanos}, -1)`;
+    case "isError": return usageEvents.isError;
+    default: return usageEvents.occurredAt;
   }
 }
 
-function buildCursorWhere(
-  primaryKey: SortKey,
-  cursor: UsageRecordCursor | null,
-  sortExpr: any
-): any {
-  if (!cursor) return undefined;
-
-  const { field: sortField, order: sortOrder } = primaryKey;
-  const { lastValue, lastId } = cursor;
-
-  if (sortField === "occurredAt") {
-    const lastDate = new Date(String(lastValue));
-    if (!Number.isFinite(lastDate.getTime())) return undefined;
-    return sortOrder === "asc"
-      ? sql`(${usageRecords.occurredAt} > ${lastDate} OR (${usageRecords.occurredAt} = ${lastDate} AND ${usageRecords.id} > ${lastId}))`
-      : sql`(${usageRecords.occurredAt} < ${lastDate} OR (${usageRecords.occurredAt} = ${lastDate} AND ${usageRecords.id} < ${lastId}))`;
-  }
-
-  return sortOrder === "asc"
-    ? sql`(${sortExpr} > ${lastValue} OR (${sortExpr} = ${lastValue} AND ${usageRecords.id} > ${lastId}))`
-    : sql`(${sortExpr} < ${lastValue} OR (${sortExpr} = ${lastValue} AND ${usageRecords.id} < ${lastId}))`;
-}
-
-export async function getUsageRecords(input: {
-  limit?: number;
-  sortKeys?: SortKey[];
-  sortField?: SortField;
-  sortOrder?: SortOrder;
-  cursor?: string | null;
-  model?: string | null;
-  route?: string | null;
-  source?: string | null;
-  start?: string | null;
-  end?: string | null;
-  includeFilters?: boolean;
+export async function getUsageRecords(input: DashboardFilters & {
+  limit?: number; sortKeys?: SortKey[]; sortField?: SortField; sortOrder?: SortOrder;
+  cursor?: string | null; includeFilters?: boolean;
 }) {
-  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
-  const rawSortKeys: SortKey[] =
-    input.sortKeys && input.sortKeys.length > 0
-      ? input.sortKeys
-      : [{ field: input.sortField ?? "occurredAt", order: input.sortOrder ?? "desc" }];
-  const seenFields = new Set<SortField>();
-  const sortKeys: SortKey[] = rawSortKeys.filter(k => {
-    if (seenFields.has(k.field)) return false;
-    seenFields.add(k.field);
-    return true;
-  });
-  const primaryKey = sortKeys[0];
-  const primaryField = primaryKey.field;
-  const primaryOrder = primaryKey.order;
-  const cursor = parseCursor(input.cursor ?? null);
-
-  const whereParts: any[] = [];
-
-  if (input.start) {
-    const startDate = new Date(input.start);
-    if (Number.isFinite(startDate.getTime())) {
-      whereParts.push(gte(usageRecords.occurredAt, startDate));
+  const limit = Math.min(Math.max(Math.floor(input.limit ?? 50), 1), 200);
+  const rawSortKeys = (input.sortKeys?.length ? input.sortKeys : [{ field: input.sortField ?? "occurredAt", order: input.sortOrder ?? "desc" }]) as SortKey[];
+  const seenSortFields = new Set<SortField>();
+  const sortKeys = rawSortKeys.filter((key) => { if (seenSortFields.has(key.field)) return false; seenSortFields.add(key.field); return true; });
+  const primary = sortKeys[0];
+  const cursor = decodeCursor(input.cursor ?? null);
+  if (input.cursor && (!cursor || JSON.stringify(cursor.sort) !== JSON.stringify(sortKeys))) throw new Error("Invalid or mismatched records cursor");
+  const whereParts: any[] = [dashboardWhere(input)];
+  if (cursor) {
+    const clauses: any[] = [];
+    const equalPrefix: any[] = [];
+    for (let index = 0; index < sortKeys.length; index += 1) {
+      const key = sortKeys[index];
+      const expression = sortExpr(key.field);
+      const op = key.order === "asc" ? sql`>` : sql`<`;
+      const rawValue = cursor.values[index];
+      const value = key.field === "occurredAt" ? new Date(String(rawValue)) : rawValue;
+      clauses.push(and(...equalPrefix, sql`${expression} ${op} ${value}`));
+      equalPrefix.push(sql`${expression} = ${value}`);
     }
+    const tieOp = primary.order === "asc" ? sql`>` : sql`<`;
+    clauses.push(and(...equalPrefix, sql`${usageEvents.eventId} ${tieOp} ${cursor.eventId}`));
+    whereParts.push(DrizzleOrm.or(...clauses));
   }
-
-  if (input.end) {
-    const endDate = new Date(input.end);
-    if (Number.isFinite(endDate.getTime())) {
-      whereParts.push(lte(usageRecords.occurredAt, endDate));
-    }
-  }
-
-  if (input.model) {
-    whereParts.push(eq(usageRecords.model, input.model));
-  }
-
-  if (input.route) {
-    whereParts.push(eq(usageRecords.route, input.route));
-  }
-
-  if (input.source) {
-    whereParts.push(sql`${CREDENTIAL_NAME_EXPR} = ${input.source}`);
-  }
-
-  const primarySortExpr = getSortExpr(primaryField) as any;
-
-  const cursorWhere = buildCursorWhere(primaryKey, cursor, primarySortExpr);
-  if (cursorWhere) whereParts.push(cursorWhere);
-
-  const where = whereParts.length ? and(...whereParts) : undefined;
-
-  const query = db
-    .select({
-      id: usageRecords.id,
-      occurredAt: usageRecords.occurredAt,
-      route: usageRecords.route,
-      source: usageRecords.source,
-      credentialName: CREDENTIAL_NAME_EXPR,
-      provider: authFileMappings.provider,
-      model: usageRecords.model,
-      totalTokens: usageRecords.totalTokens,
-      inputTokens: usageRecords.inputTokens,
-      outputTokens: usageRecords.outputTokens,
-      reasoningTokens: usageRecords.reasoningTokens,
-      cachedTokens: usageRecords.cachedTokens,
-      isError: usageRecords.isError,
-      cost: COST_EXPR
-    })
-    .from(usageRecords)
-    .leftJoin(authFileMappings, eq(usageRecords.authIndex, authFileMappings.authId))
-    .where(where)
-    .orderBy(
-      ...sortKeys.map(k => {
-        const expr = getSortExpr(k.field) as any;
-        return k.order === "asc" ? asc(expr) : desc(expr);
-      }),
-      primaryOrder === "asc" ? asc(usageRecords.id) : desc(usageRecords.id)
-    )
-    .limit(limit + 1);
-
-  const rows: UsageRecordRow[] = await query;
-
+  const where = and(...whereParts.filter(Boolean));
+  const ordering = sortKeys.map((key) => key.order === "asc" ? asc(sortExpr(key.field)) : desc(sortExpr(key.field)));
+  ordering.push(primary.order === "asc" ? asc(usageEvents.eventId) : desc(usageEvents.eventId));
+  const rows = await db.select({
+    id: usageEvents.eventId,
+    occurredAt: usageEvents.occurredAt,
+    route: sql`coalesce(${usageEvents.apiKeyMask}, '')`,
+    source: usageEvents.source,
+    credentialName: sql<string>`coalesce(nullif(${authFileMappings.name}, ''), nullif(${usageEvents.source}, ''), nullif(${usageEvents.authIndex}, ''), '-')`,
+    provider: usageEvents.provider,
+    endpoint: usageEvents.endpoint,
+    requestId: usageEvents.requestId,
+    authType: usageEvents.authType,
+    stream: usageEvents.stream,
+    generate: usageEvents.generate,
+    modelAlias: usageEvents.modelAlias,
+    responseModel: usageEvents.responseModel,
+    reasoningEffort: usageEvents.reasoningEffort,
+    executorType: usageEvents.executorType,
+    accessProvider: usageEvents.accessProvider,
+    isNativeKey: usageEvents.isNativeKey,
+    model: usageEvents.model,
+    totalTokens: usageEvents.totalTokens,
+    inputTokens: usageEvents.inputTokens,
+    outputTokens: usageEvents.outputTokens,
+    reasoningTokens: usageEvents.reasoningTokens,
+    cachedTokens: usageEvents.cachedTokens,
+    cacheCreationTokens: usageEvents.cacheCreationTokens,
+    latencyMs: usageEvents.latencyMs,
+    ttftMs: usageEvents.ttftMs,
+    serviceTier: sql<string | null>`coalesce(${usageEvents.effectiveServiceTier}, ${usageEvents.billedServiceTier}, ${usageEvents.serviceTier})`,
+    statusCode: usageEvents.statusCode,
+    failCode: usageEvents.failCode,
+    isError: usageEvents.isError,
+    costNanos: usageEvents.costNanos,
+    costCurrency: usageEvents.costCurrency,
+    pricingStatus: usageEvents.pricingStatus,
+    priceVersionId: usageEvents.priceVersionId
+  }).from(usageEvents).leftJoin(authFileMappings, eq(usageEvents.authIndex, authFileMappings.authId)).where(where).orderBy(...ordering).limit(limit + 1);
   const hasMore = rows.length > limit;
-  const items = hasMore ? rows.slice(0, limit) : rows;
-
-  const nextCursor = (() => {
-    if (!hasMore) return null;
-    const last = items[items.length - 1];
-    if (!last) return null;
-    const lastValue = (() => {
-      switch (primaryField) {
-        case "model":
-          return last.model;
-        case "totalTokens":
-          return last.totalTokens;
-        case "cost":
-          return Number(last.cost ?? 0);
-        case "route":
-          return last.route;
-        case "source":
-          return last.credentialName;
-        case "inputTokens":
-          return last.inputTokens;
-        case "outputTokens":
-          return last.outputTokens;
-        case "reasoningTokens":
-          return last.reasoningTokens;
-        case "cachedTokens":
-          return last.cachedTokens;
-        case "isError":
-          return last.isError ? 1 : 0;
-        case "occurredAt":
-        default:
-          return last.occurredAt.toISOString();
-      }
-    })();
-    const cursorPayload: UsageRecordCursor = { lastValue, lastId: last.id };
-    return Buffer.from(JSON.stringify(cursorPayload)).toString("base64");
-  })();
-
-  let filters: { models: string[]; routes: string[]; sources: string[] } | undefined;
-  if (input.includeFilters) {
-    const [modelRows, routeRows, sourceRows]: [
-      Array<{ model: string }>,
-      Array<{ route: string }>,
-      Array<{ source: string }>
-    ] = await Promise.all([
-      db
-        .select({ model: usageRecords.model })
-        .from(usageRecords)
-        .where(where)
-        .groupBy(usageRecords.model)
-        .orderBy(usageRecords.model)
-        .limit(200),
-      db
-        .select({ route: usageRecords.route })
-        .from(usageRecords)
-        .where(where)
-        .groupBy(usageRecords.route)
-        .orderBy(usageRecords.route)
-        .limit(200),
-      db
-        .select({ source: CREDENTIAL_NAME_EXPR })
-        .from(usageRecords)
-        .leftJoin(authFileMappings, eq(usageRecords.authIndex, authFileMappings.authId))
-        .where(where)
-        .groupBy(CREDENTIAL_NAME_EXPR)
-        .orderBy(CREDENTIAL_NAME_EXPR)
-        .limit(200),
-    ]);
-    filters = {
-      models: modelRows.map((row) => row.model),
-      routes: routeRows.map((row) => row.route),
-      sources: sourceRows.map((row) => row.source).filter((name): name is string => Boolean(name) && name !== "-")
-    };
+  const items = (hasMore ? rows.slice(0, limit) : rows).map((row: any) => ({ ...row, occurredAt: row.occurredAt.toISOString(), cost: row.costNanos == null ? null : Number(row.costNanos) / 1_000_000_000 }));
+  let nextCursor: string | null = null;
+  if (hasMore && items.length) {
+    const last: any = items[items.length - 1];
+    const values = sortKeys.map((key) => key.field === "occurredAt" ? last.occurredAt : key.field === "route" ? last.route : key.field === "source" ? last.credentialName : key.field === "cost" ? (last.costNanos ?? -1) : last[key.field]);
+    nextCursor = encodeCursor({ v: 1, sort: sortKeys, values, eventId: last.id });
   }
-
-  return {
-    items: items.map((row) => ({
-      ...row,
-      cost: Number(row.cost ?? 0)
-    })),
-    nextCursor,
-    filters
-  };
+  const filters = input.includeFilters ? await getDashboardFilterOptions(input) : undefined;
+  return { items, nextCursor, filters: filters ? { models: filters.models, routes: filters.routes, sources: filters.names, providers: filters.providers, serviceTiers: filters.serviceTiers } : undefined };
 }

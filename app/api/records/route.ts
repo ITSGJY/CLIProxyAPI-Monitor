@@ -33,6 +33,12 @@ export async function GET(request: Request) {
     const model = searchParams.get("model");
     const route = searchParams.get("route");
     const source = searchParams.get("source");
+    const provider = searchParams.get("provider");
+    const serviceTier = searchParams.get("serviceTier");
+    const statusParam = searchParams.get("status");
+    if (statusParam && statusParam !== "success" && statusParam !== "error") return NextResponse.json({ error: "Invalid status filter" }, { status: 400 });
+    const status = statusParam as "success" | "error" | null;
+    const currency = searchParams.get("currency");
     const start = searchParams.get("start");
     const end = searchParams.get("end");
     const includeFilters = searchParams.get("includeFilters") === "1";
@@ -48,6 +54,10 @@ export async function GET(request: Request) {
       model: model || undefined,
       route: route || undefined,
       source: source || undefined,
+      provider: provider || undefined,
+      serviceTier: serviceTier || undefined,
+      status,
+      currency: currency || undefined,
       start,
       end,
       includeFilters

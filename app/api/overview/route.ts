@@ -21,7 +21,7 @@ const OVERVIEW_CACHE_TTL_MS = 30_000;
 const OVERVIEW_CACHE_MAX_ENTRIES = 100;
 const overviewCache = new Map<string, CachedOverview>();
 
-function makeCacheKey(input: { days?: number; model?: string | null; route?: string | null; source?: string | null; name?: string | null; page?: number; pageSize?: number; start?: string | null; end?: string | null }) {
+function makeCacheKey(input: { days?: number; model?: string | null; route?: string | null; source?: string | null; name?: string | null; page?: number; pageSize?: number; start?: string | null; end?: string | null; provider?: string | null; serviceTier?: string | null; status?: string | null; currency?: string | null }) {
   return JSON.stringify({
     days: input.days ?? null,
     model: input.model ?? null,
@@ -31,7 +31,11 @@ function makeCacheKey(input: { days?: number; model?: string | null; route?: str
     page: input.page ?? null,
     pageSize: input.pageSize ?? null,
     start: input.start ?? null,
-    end: input.end ?? null
+    end: input.end ?? null,
+    provider: input.provider ?? null,
+    serviceTier: input.serviceTier ?? null,
+    status: input.status ?? null,
+    currency: input.currency ?? null
   });
 }
 
@@ -68,6 +72,12 @@ export async function GET(request: Request) {
     const route = searchParams.get("route");
     const source = searchParams.get("source");
     const name = searchParams.get("name");
+    const provider = searchParams.get("provider");
+    const serviceTier = searchParams.get("serviceTier");
+    const statusParam = searchParams.get("status");
+    if (statusParam && statusParam !== "success" && statusParam !== "error") return NextResponse.json({ error: "Invalid status filter" }, { status: 400 });
+    const status = statusParam as "success" | "error" | null;
+    const currency = searchParams.get("currency");
     const pageParam = searchParams.get("page");
     const pageSizeParam = searchParams.get("pageSize");
     const start = searchParams.get("start");
@@ -77,7 +87,7 @@ export async function GET(request: Request) {
     const pageSize = pageSizeParam ? Number.parseInt(pageSizeParam, 10) : undefined;
     const skipCacheParam = searchParams.get("skipCache");
     const skipCache = skipCacheParam === "1" || skipCacheParam === "true";
-    const cacheKey = makeCacheKey({ days, model, route, source, name, page, pageSize, start, end });
+    const cacheKey = makeCacheKey({ days, model, route, source, name, page, pageSize, start, end, provider, serviceTier, status, currency });
     if (!skipCache) {
       const cached = getCached(cacheKey);
       if (cached) {
@@ -85,11 +95,15 @@ export async function GET(request: Request) {
       }
     }
 
-    const { overview, empty, days: appliedDays, meta, filters, timezone, lastSyncAt } = await getOverview(days, {
+    const { overview, empty, days: appliedDays, meta, filters, timezone, lastSyncAt, costByCurrency, pricingCoverage } = await getOverview(days, {
       model: model || undefined,
       route: route || undefined,
       source: source || undefined,
       name: name || undefined,
+      provider: provider || undefined,
+      serviceTier: serviceTier || undefined,
+      status,
+      currency: currency || undefined,
       page,
       pageSize,
       start,
@@ -97,7 +111,7 @@ export async function GET(request: Request) {
       timezone: config.timezone
     });
 
-    const payload = { overview, empty, days: appliedDays, meta, filters, timezone, lastSyncAt };
+    const payload = { overview, empty, days: appliedDays, meta, filters, timezone, lastSyncAt, costByCurrency, pricingCoverage };
     setCached(cacheKey, payload);
     return NextResponse.json(payload, { status: 200 });
   } catch (error) {

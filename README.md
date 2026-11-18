@@ -1,37 +1,34 @@
-> [!CAUTION]
-> #### 注：CPA 上游已于 [v6.10.0](https://github.com/router-for-me/CLIProxyAPI/releases/tag/v6.10.0) 正式去除 `/usage` 接口，若希望继续使用本项目追踪用量，请一并配置 [adapter.js](#cpa-近端适配器adapterjs) 。
-> 或者回退 v6.9.49 或更早版本。
+> [!IMPORTANT]
+> This is the personal **CLIProxyAPI-Monitor Plus** fork. It keeps the upstream Overview, Explore and Records experience while replacing the legacy `/usage` adapter with a CPA v8 request-level pipeline.
+>
+> The production Collector uses native RESP `AUTH` + `SUBSCRIBE usage`. Each event is committed to the PostgreSQL 17 durable Inbox before processing. The Processor and Rollup workers are independent services. Production explicitly uses `COLLECTOR_MODE=subscribe` and disables FIFO fallback. OMC and CPA Usage Keeper can remain subscribed to the same broadcast; do not use destructive FIFO pull while any other subscriber is active.
+>
+> CPA Pub/Sub is at-most-once and has no ACK or replay cursor. Disconnects and uncertain windows are recorded as ingestion gaps. PostgreSQL `usage_inbox` is the durable journal; the final architecture intentionally does not add a local SQLite spool (see [ADR-001](docs/decisions/ADR-001-postgres-durable-inbox.md)).
 
+# CLIProxyAPI Monitor Plus
 
-# CLIProxyAPI 数据看板
+面向 CLIProxyAPI v8 的独立使用量监控与统计中台。它不管理 CPA 配置、OAuth 账号或 Provider，也不依赖 OMC / Keeper API 作为运行时数据来源。
 
-基于 Next.js App Router + Drizzle + Postgres 的数据看板，用于自动拉取上游 CLIProxyAPI 使用数据，**持久化到数据库**，并进行数据可视化。
+## 主要功能
 
-## 功能
-- `/api/sync` 拉取上游用量数据并去重入库（支持 GET/POST，有鉴权）
-- 前端表单可配置模型单价，亦支持从 models.dev 自动拉取价格信息（ [#17 @ZIC143](https://github.com/sxjeru/CLIProxyAPI-Monitor/pull/17) ）
-- 前端图表：日粒度折线图、小时粒度柱状图、模型费用列表等，支持时间范围、模型、Key、凭证筛选
-- 访问密码保护
+- **Overview**：请求量、失败率、Token、缓存、延迟、API 等价成本、成本覆盖率及排行。
+- **Explore**：请求级 Token、模型 / Provider / Credential / Service Tier 分布、缓存趋势、Latency 和 TTFT。
+- **Records**：完整请求记录、筛选、排序、稳定游标分页及计费状态。
+- **Collector**：CPA v8 原生 RESP Subscription、连接恢复、事件审计、Gap Tracking 和 PostgreSQL Durable Inbox。
+- **Processor / Rollup**：幂等事件归一化、版本化价格、历史成本快照、小时及每日聚合。
+- **Historical import**：可审计的 OMC SQLite 历史记录导入，不修改 OMC 原始数据库。
 
-## 部署到 Vercel
-1. Fork 本仓库，创建 Vercel 项目并关联
-2. 在 Vercel 环境变量中填写：
+## 部署与运行
 
-	| 环境变量 | 说明 | 备注 |
-	|---|---|---|
-	| CLIPROXY_SECRET_KEY | 登录 CLIProxyAPI 后台管理界面的密钥 | 无 |
-	| CLIPROXY_API_BASE_URL | 自部署的 CLIProxyAPI 根地址 | 如 `https://your-domain.com/` |
-	| USAGE_API_BASE_URL | usage 数据源接口 | 可选；不填时沿用 `CLIPROXY_API_BASE_URL`，接 adapter 时可单独指向 |
-	| DATABASE_URL | 数据库连接串（仅支持 Postgres） | 可直接使用 Neon |
-	| DATABASE_DRIVER | `pg` 或 `neon` | 可选；默认自动检测 |
-	| DATABASE_CA | DB 服务端 CA 证书 | 可选；PEM 原始内容或 Base64 编码均可 |
-	| PASSWORD | 访问密码，同时用于调用 `/api/sync` | 可选；留空默认使用 `CLIPROXY_SECRET_KEY` |
-	| CRON_SECRET | 使用 Vercel Cron 时需填写 | 任意字符串均可；建议长度 ≥ 16 |
+- Node.js 24、pnpm 10、PostgreSQL 17；生产通过 GitHub Actions 发布的不可变 ARM64 Docker 镜像部署。
+- Web、Processor、Rollup 运行在 Docker bridge 网络；Collector 使用独立 host-network 容器访问 CPA 的 loopback RESP 端口，不对外暴露 8317。
+- 首次部署前单独执行 SQL migration runner；`pnpm build` 不会修改数据库。禁止对生产环境使用 `drizzle-kit push`。
+- Collector 默认关闭。生产配置使用 `COLLECTOR_ENABLED=true`、`COLLECTOR_MODE=subscribe`、`COLLECTOR_ALLOW_PULL_FALLBACK=false`，并显式启用两个生产目标开关。
+- FIFO `pull` 仅用于经过协调的单消费者兼容场景；不得与 OMC、Keeper 等订阅者同时使用。
 
-3. 部署后，可通过以下方式自动同步上游使用数据：
+查看 [架构决策](docs/architecture.md)、[Phase 3 Collector](docs/phase3-collector.md)、[Phase 4 Processor / Pricing](docs/phase4-processor.md)、[Phase 6 历史导入](docs/phase6-legacy-import.md) 和 [Phase 7 部署验收](docs/phase7-runbook.md)。
 
-	- 默认启用 Vercel Cron（ Pro 可设每小时，Hobby 每天同步一次，请见 [vercel.json](https://github.com/sxjeru/CLIProxyAPI-Monitor/blob/main/vercel.json) ）
-	- Cloudflare Worker / 其他定时器定期请求同步：可见 [cf-worker-sync.js](https://github.com/sxjeru/CLIProxyAPI-Monitor/blob/main/cf-worker-sync.js)
+持续集成、GHCR 多架构镜像发布、Oracle 生产部署和受限 SSH 机制见 [GitHub CI/CD 运维手册](docs/ci-cd.md)。
 
 ## 预览
 
@@ -45,7 +42,7 @@
 
 | 环境变量 | 说明 | 默认值 | 备注 |
 |---|---|---|---|
-| `DATABASE_POOL_MAX` | 连接池最大连接数 | `5` | 最小为 1 |
+| `DATABASE_POOL_MAX` | 连接池最大连接数 | `3` | 低内存 PostgreSQL 主机建议保持较小 |
 | `DATABASE_POOL_IDLE_TIMEOUT_MS` | 空闲连接超时时间 (毫秒) | `10000` | 超过此时间未使用的连接将被释放 |
 | `DATABASE_POOL_CONNECTION_TIMEOUT_MS` | 获取连接超时时间 (毫秒) | `5000` | 等待连接空闲的最长时间 |
 | `DATABASE_POOL_MAX_USES` | 连接最大使用次数 | `7500` | 单个连接在关闭前可执行的最大查询数 |
@@ -56,17 +53,16 @@
 ## Local DEV
 1. 安装依赖：`pnpm install`
 2. 修改环境变量：`cp .env.example .env`
-3. 创建表结构：`pnpm run db:push`
-4. 同步数据：GET/POST `/api/sync`（可选）
-5. 启动开发：`pnpm dev`
+3. 创建表结构：`pnpm db:migrate`（先确认 `DATABASE_URL` 指向隔离的测试库）
+4. 启动隔离的 CPA v8 Collector：`pnpm collector`（仅在配置好 loopback CPA 测试实例和 `cpa_monitor_test` 后）
+5. 提交拉取任务：GET/POST `/api/sync`（可选）
+6. 启动开发：`pnpm dev`
 
 ---
 
-## CPA 近端适配器（adapter.js）
+## Legacy CPA 适配器（仅兼容）
 
-由于 CPA 新版已移除 `/usage` 接口，可将 [adapter.js](adapter.js) 部署在 CPA 同端，实现从 CPA Redis 队列聚合 usage，还原接口功能，再自动提供给本项目的 `/api/sync` 拉取。
-
-部署脚本时可以添加反代以正常使用看板的同步功能，同时保持对原管理接口的访问。
+`adapter.js` 仅保留为历史兼容代码，默认拒绝启动。它面向旧版 `/usage` 适配流程，不适用于新的 CPA v8 采集链路。除非专门验证旧版兼容性，否则不要启用 `ENABLE_LEGACY_ADAPTER=true`；新版本应使用独立的 CPA v8 Collector。以下旧版反向代理与环境变量说明仅供历史部署排查，不属于 Monitor Plus v2.0 的推荐部署方式。
 
 ```
 your.domain {
@@ -131,3 +127,29 @@ pm2 start adapter.js --name cpa-adapter
 - [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 - [Linux.DO](https://linux.do/)
 - [Vercel](https://vercel.com/)
+
+
+### Phase 5 Dashboard Read Path
+
+- Overview, Explore and Records now read canonical `usage_events`; Overview uses fresh timezone-matched daily rollups for complete local-day trend ranges up to 90 days when selected filters are represented by the rollup dimensions; partial-day and unsupported filter combinations safely fall back to event aggregation.
+- Costs use persisted `cost_nanos` and remain separated by currency; unpriced costs remain `null` in Records and pricing coverage is explicit.
+- Explore applies SQL filters before deterministic time-stratified sampling (maximum 8,000 points) and returns a PII-safe projection.
+- Records uses a versioned cursor with multi-sort lexicographic tie-breaking and event ID stability.
+- `/collector` exposes Collector health, Inbox counts, recent pull attempts, ingestion gaps and price coverage.
+- Migration `0006_phase5_dashboard_rollup_dimensions.sql` extends Rollup dimensions for API Key, Service Tier, cache creation and pricing coverage. Phase 6 historical imports and Phase 7 production cutover remain out of scope.
+
+
+### Phase 6 Historical OMC Import
+
+- `scripts/snapshot-omc-sqlite.py` creates a consistent read-only SQLite snapshot. `scripts/omc-sqlite-source.py` validates and exports an allowlisted source projection. `scripts/import-omc-sqlite.mjs` performs a resumable, SHA-256-bound, idempotent import into loopback PostgreSQL test databases by default. Production import requires a separate dual opt-in and is restricted to the dedicated Monitor database.
+- Migration `0007_phase6_legacy_import.sql` adds import-run audit/progress, preserves source price-version IDs separately from target price-version foreign keys, and retains OMC's full historical price-version catalog in a separate audit table.
+- The OMC source is request-level `usage_events`; duplicate `event_key` rows are retained using source row ID identity, with the original key retained as `source_event_key`. Sensitive raw request/network fields are excluded.
+- See `docs/phase6-legacy-import.md` for source inventory, mapping, reconciliation and Phase 7 boundary.
+
+
+### Phase 7 Deployment and Resilience
+
+- `Dockerfile` builds a Next.js standalone runtime; GitHub Actions publishes immutable `sha-*` images to GHCR. The production host pulls the pinned image and does not run Node/pnpm builds.
+- `deploy/compose/compose.yaml` runs Web, Processor and Rollup on the existing `personal-cloud-hub_default` Docker network. The CPA Collector runs in a separate opt-in Compose profile with `network_mode: host` because CPA binds its RESP/management listener to `127.0.0.1:8317`. Its default `auto` mode uses native RESP `SUBSCRIBE usage`; FIFO pull is an explicit compatibility mode.
+- The production deployment requires a dedicated PostgreSQL database/role, separate from Cloudreve. The Collector remains disabled until a coordinated single-consumer cutover.
+- See [Phase 7 runbook](docs/phase7-runbook.md) for fault recovery, queue retention, Docker deployment and cutover gates.
