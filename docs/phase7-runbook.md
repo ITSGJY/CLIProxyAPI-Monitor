@@ -54,6 +54,7 @@ The Collector is excluded from the default Compose profile. Keep it disabled unt
 - Back up the new Monitor database before migrations and before cutover.
 - Keep Cloudreve's existing database, role, data volume and Redis untouched.
 - Do not publish CPA port 8317 or change its bind address to make Docker networking easier.
+- CPA `management.secret-key` is stored as a bcrypt hash in `config.yaml`; RESP clients must use the corresponding plaintext management secret from a trusted existing client configuration, never copy the hash into `CPA_MANAGEMENT_KEY`. Keep the Monitor `.env` restricted to mode `0600`.
 - Prefer RESP subscription while OMC/Keeper remain active; all subscribers receive the broadcast. The stream is at-most-once with no replay, so every disconnect is recorded as a gap. Do not select FIFO pull while any other subscriber is active. The FIFO queue has a one-hour retention window and is not an unlimited outage buffer.
 - A pull interrupted after CPA LPOP but before Inbox commit is an explicit ingestion gap; do not describe this delivery boundary as lossless.
 - Keep Collector, Processor, Rollup and web database pools within the documented connection budget.
@@ -67,8 +68,11 @@ The Collector is excluded from the default Compose profile. Keep it disabled unt
 - [x] Added a GitHub Actions PostgreSQL 17 container restart durability test.
 - [x] Phase 7 browser acceptance in GitHub Actions (login and Overview/Explore/Records pages; API errors and console errors checked).
 - [x] Phase 7 immutable Docker image build and container smoke test (GHCR image built and launched).
-- [ ] Provision dedicated Monitor database/role and validate backup/restore.
-- [x] Increase CPA queue retention from 300 seconds to the documented maximum of 3,600 seconds; config hot reload verified and original config backed up.
-- [ ] Deploy the Monitor Collector in `auto`/`subscribe` mode, verify the CPA SUBSCRIBE acknowledgement and event flow, then verify OMC/Keeper continue receiving the same broadcast. Do not disable their subscribers for this mode.
-- [ ] Use explicit `pull` mode only if SUBSCRIBE is unavailable and all other subscribers are confirmed stopped; then ensure exactly one FIFO consumer. CPAMP price synchronization may remain active if it does not consume the usage queue.
-- [ ] Verify live Collector health, Inbox drain, Processor, Rollup and Dashboard totals after cutover.
+- [x] Provision the dedicated Monitor PostgreSQL database and least-privilege role; production backup and isolated restore validation passed during deployment.
+- [x] Deploy immutable GHCR image `sha-36001d4` through GitHub Actions; Web, Processor, Rollup and Collector are running.
+- [x] Public entrypoint `https://cpa-monitor.gjy666.eu.cc` returns the Monitor login page through Nginx/Cloudflare; the separate `monitor.gjy666.eu.cc` route remains untouched.
+- [x] Collector runs in `subscribe` mode with `state=receiving`, a healthy Docker healthcheck, and `lastErrorCode=null`.
+- [x] Confirm CPA RESP `SUBSCRIBE usage` acknowledgement and active OMC, Keeper, CPAMP and Monitor TCP clients on port 8317; OMC/Keeper subscribers remain enabled.
+- [x] Ignore CPA `support_refresh` and `refresh` RESP control frames before Inbox persistence; six historical control frames were reclassified as processed, leaving zero dead letters.
+- [x] Keep FIFO Pull disabled; no Monitor `LPOP` consumer is running.
+- [ ] Verify the first real usage event end-to-end through Inbox, Processor, Rollup and Dashboard. At the latest cutover check, `usage_events` was still empty because no real CPA request had yet been observed.
