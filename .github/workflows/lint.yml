@@ -180,7 +180,7 @@ jobs:
           EXPECTED_ARCH: ${{ matrix.arch }}
         run: |
           docker pull "$IMAGE"
-          docker run --rm "$IMAGE" node -e 'if (process.arch !== process.env.EXPECTED_ARCH) process.exit(1); console.log(process.arch + " runtime verified")'
+          docker run --rm -e EXPECTED_ARCH="$EXPECTED_ARCH" "$IMAGE" node -e 'if (process.arch !== process.env.EXPECTED_ARCH) process.exit(1); console.log(process.arch + " runtime verified")'
           docker run --rm "$IMAGE" node --input-type=module -e 'await import("drizzle-orm/node-postgres/migrator"); await import("pg"); console.log("PostgreSQL migration runtime verified")'
 
   publish-manifest:
