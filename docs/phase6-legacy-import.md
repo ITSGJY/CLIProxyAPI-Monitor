@@ -20,7 +20,7 @@
 - The OMC event and price-version schemas do not contain a currency column. The importer uses USD as the canonical OMC price unit; this is a schema-level mapping assumption. The separate display exchange-rate cache is not imported.
 - `source_instance_id=legacy-oh-my-cpa-default`, `origin_system=oh_my_cpa`, `source_transport=legacy_import`. The matching collector instance is registered disabled; no queue is consumed.
 - Deterministic identity: SHA-256 of `legacy-oh-my-cpa-v1`, source key and immutable source row ID. The original `event_key` is retained separately as `source_event_key` for provenance and duplicate analysis. Duplicate source `event_key` values do not collapse distinct source rows.
-- The importer is restartable by source ID, batched transactionally, source-SHA256 bound, serialized with a PostgreSQL advisory lock, and replay-safe. It verifies the source file hash again before finalizing a run. A completed source snapshot is a no-op on re-run.
+- The importer is restartable by source ID, batched transactionally, source-SHA256 bound, serialized with a PostgreSQL advisory lock, and replay-safe. By default it only accepts loopback PostgreSQL test databases. Production import is an explicit Phase 7 operation requiring both `--allow-production-target` and `PHASE6_IMPORT_ALLOW_PRODUCTION_TARGET=true`, and it only accepts the dedicated `cliproxyapi_monitor` role/database on Docker host `postgres`. It verifies the source file hash again before finalizing a run. A completed source snapshot is a no-op on re-run.
 - A run ledger records source checksum, schema version, manifest, progress, inserted/skipped counts, and completion/failure state.
 
 ## Privacy boundary

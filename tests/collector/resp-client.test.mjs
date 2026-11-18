@@ -226,7 +226,7 @@ test("CPA RESP subscription authenticates, subscribes to usage and durably forwa
   assert.deepEqual(observed[1], ["SUBSCRIBE", "usage"]);
 });
 
-test("RESP subscription marks an explicit server rejection so auto mode can safely select pull", async (t) => {
+test("RESP subscription marks an explicit server rejection for the Collector fallback policy", async (t) => {
   const server = createServer((socket) => {
     let buffer = Buffer.alloc(0);
     socket.on("data", (chunk) => {

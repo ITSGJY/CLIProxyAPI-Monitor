@@ -18,7 +18,7 @@
     "collector:health": "node scripts/collector-health.mjs",
     "processor": "node scripts/processor.mjs",
     "rollup": "node scripts/rollup.mjs",
-    "test:import": "node --test tests/omc-import.test.mjs",
+    "test:import": "node --test tests/omc-import.test.mjs tests/import-target-policy.test.mjs tests/omc-snapshot.test.mjs",
     "test:e2e": "playwright test"
   },
   "dependencies": {

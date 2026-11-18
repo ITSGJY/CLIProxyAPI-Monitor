@@ -43,12 +43,13 @@ Production safety overrides, reserved for a separately approved cutover:
 Optional bounds:
 
 - `CPA_USAGE_QUEUE=usage` (any other queue is rejected)
-- `COLLECTOR_MODE=auto` (RESP `SUBSCRIBE usage` first; FIFO pull only after an explicit server rejection)
+- `COLLECTOR_MODE=subscribe` for production native Pub/Sub; `auto` is a test compatibility mode
+- `COLLECTOR_ALLOW_PULL_FALLBACK=false` by default; production config rejects enabling it
 - `COLLECTOR_POLL_INTERVAL_MS=10000`
 - `COLLECTOR_BATCH_SIZE=100`
 - `COLLECTOR_LEASE_SECONDS=60` (minimum `max(60, 3 × poll interval in seconds)`)
 
-Run `pnpm collector` only against an isolated CPA test instance and disposable PostgreSQL database. The command is not run as part of build or CI. Empty poll attempts are retained for seven days and pruned automatically; use a 10-second default poll interval to bound audit-row growth. Phase 3 operations and health checks are documented in [the Phase 3 Collector runbook](phase3-collector.md).
+Run `pnpm collector` only against an isolated CPA test instance and disposable PostgreSQL database. The command is not run as part of build or CI. Phase 3 operations and health checks are documented in [the Phase 3 Collector runbook](phase3-collector.md).
 
 ## Phase 1 exit criteria
 

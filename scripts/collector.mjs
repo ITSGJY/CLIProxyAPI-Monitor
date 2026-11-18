@@ -15,6 +15,7 @@ import {
   markPullAttemptFailed,
   persistPulledBatch,
   persistSubscribedUsageEvent,
+  markSubscriptionEstablished,
   completeSubscriptionAttempt,
   interruptSubscriptionAttempt,
   pruneEmptyPullAttempts
@@ -104,7 +105,12 @@ async function runSubscriptionSession(pool, config, stopSignal, refreshLease) {
       timeoutMs: config.respTimeoutMs,
       signal: sessionController.signal,
       onSubscribed: async () => {
-        await heartbeatCollectorState(pool, config.instanceId, config.workerId, "receiving", config.leaseSeconds);
+        await markSubscriptionEstablished(pool, {
+          attemptId,
+          instanceId: config.instanceId,
+          workerId: config.workerId,
+          leaseSeconds: config.leaseSeconds
+        });
       },
       onMessage: async (payload) => {
         await persistSubscribedUsageEvent(pool, {
@@ -216,8 +222,11 @@ async function run() {
           if (paused) continue;
         } catch (subscribeError) {
           if (runtimeMode === "auto" && subscribeError?.respSubscribeRejected) {
+            if (!config.allowPullFallback) {
+              throw new Error("CPA rejected RESP SUBSCRIBE and FIFO fallback is disabled; refusing destructive LPOP while other subscribers may be active");
+            }
             runtimeMode = "pull";
-            console.warn("CPA RESP SUBSCRIBE was explicitly rejected; switching to FIFO pull mode because the server did not accept a subscriber.");
+            console.warn("CPA RESP SUBSCRIBE was explicitly rejected; switching to FIFO pull mode because COLLECTOR_ALLOW_PULL_FALLBACK=true.");
             continue;
           }
           if (stopping) break;

@@ -1,35 +1,32 @@
 > [!IMPORTANT]
-> This is the personal **Monitor Plus v2.0** fork. The original `/usage` adapter and Vercel polling flow are legacy compatibility code, not the new ingestion path.
+> This is the personal **CLIProxyAPI-Monitor Plus** fork. It keeps the upstream Overview, Explore and Records experience while replacing the legacy `/usage` adapter with a CPA v8 request-level pipeline.
 >
-> Phase 1 establishes the PostgreSQL 17 event-store foundation. Phase 3 completes the disabled-by-default CPA v8 Pull-first Collector: RESP AUTH/LPOP, safe HTTP fallback, durable bulk Inbox writes, audited gaps, lease recovery and a standalone health check. Phase 4 adds independent Processor and Rollup Workers for idempotent event processing, historical pricing and hourly/daily aggregates; both workers remain disabled by default. See [architecture](docs/architecture.md), [Phase 1 runbook](docs/phase1-runbook.md), [Phase 3 Collector runbook](docs/phase3-collector.md) and [Phase 4 Processor/Pricing runbook](docs/phase4-processor.md).
+> The production Collector uses native RESP `AUTH` + `SUBSCRIBE usage`. Each event is committed to the PostgreSQL 17 durable Inbox before processing. The Processor and Rollup workers are independent services. Production explicitly uses `COLLECTOR_MODE=subscribe` and disables FIFO fallback. OMC and CPA Usage Keeper can remain subscribed to the same broadcast; do not use destructive FIFO pull while any other subscriber is active.
 >
-> Do not run the new Collector beside OMC, CPA Usage Keeper or CPA Manager Plus on the production CPA instance. CPA queue pulls are destructive; a separate single-consumer cutover is required.
+> CPA Pub/Sub is at-most-once and has no ACK or replay cursor. Disconnects and uncertain windows are recorded as ingestion gaps. PostgreSQL `usage_inbox` is the durable journal; the final architecture intentionally does not add a local SQLite spool (see [ADR-001](docs/decisions/ADR-001-postgres-durable-inbox.md)).
 
+# CLIProxyAPI Monitor Plus
 
-# CLIProxyAPI 数据看板
+面向 CLIProxyAPI v8 的独立使用量监控与统计中台。它不管理 CPA 配置、OAuth 账号或 Provider，也不依赖 OMC / Keeper API 作为运行时数据来源。
 
-基于 Next.js App Router + Drizzle + Postgres 的数据看板，用于自动拉取上游 CLIProxyAPI 使用数据，**持久化到数据库**，并进行数据可视化。
+## 主要功能
 
-## 功能
-- `/api/sync` 将拉取命令交给健康状态的 CPA v8 Collector（支持 GET/POST，有鉴权）
-- 前端表单可配置模型单价，亦支持从 models.dev 自动拉取价格信息（ [#17 @ZIC143](https://github.com/sxjeru/CLIProxyAPI-Monitor/pull/17) ）
-- 前端图表：日粒度折线图、小时粒度柱状图、模型费用列表等，支持时间范围、模型、Key、凭证筛选；新事件表的 UI 读取切换将在后续阶段完成
-- 访问密码保护
+- **Overview**：请求量、失败率、Token、缓存、延迟、API 等价成本、成本覆盖率及排行。
+- **Explore**：请求级 Token、模型 / Provider / Credential / Service Tier 分布、缓存趋势、Latency 和 TTFT。
+- **Records**：完整请求记录、筛选、排序、稳定游标分页及计费状态。
+- **Collector**：CPA v8 原生 RESP Subscription、连接恢复、事件审计、Gap Tracking 和 PostgreSQL Durable Inbox。
+- **Processor / Rollup**：幂等事件归一化、版本化价格、历史成本快照、小时及每日聚合。
+- **Historical import**：可审计的 OMC SQLite 历史记录导入，不修改 OMC 原始数据库。
 
 ## 部署与运行
 
-### Dashboard
+- Node.js 24、pnpm 10、PostgreSQL 17；生产通过 GitHub Actions 发布的不可变 ARM64 Docker 镜像部署。
+- Web、Processor、Rollup 运行在 Docker bridge 网络；Collector 使用独立 host-network 容器访问 CPA 的 loopback RESP 端口，不对外暴露 8317。
+- 首次部署前单独执行 SQL migration runner；`pnpm build` 不会修改数据库。禁止对生产环境使用 `drizzle-kit push`。
+- Collector 默认关闭。生产配置使用 `COLLECTOR_ENABLED=true`、`COLLECTOR_MODE=subscribe`、`COLLECTOR_ALLOW_PULL_FALLBACK=false`，并显式启用两个生产目标开关。
+- FIFO `pull` 仅用于经过协调的单消费者兼容场景；不得与 OMC、Keeper 等订阅者同时使用。
 
-- Node.js 24、pnpm 10 和 PostgreSQL 17。
-- 设置 `DATABASE_URL`、`PASSWORD`、`CRON_SECRET`；如需调用 CPA 管理接口，再设置 `CLIPROXY_API_BASE_URL` 和 `CLIPROXY_SECRET_KEY`。
-- 首次部署前，单独执行 `pnpm db:migrate`。`pnpm build` 只构建应用，不会隐式修改数据库。
-- Dashboard 可部署在 Vercel 或自有主机；当前 `vercel.json` 不启用自动 Cron。
-
-### CPA v8 Collector
-
-Collector 是独立 Node 进程，运行 `pnpm collector`；健康检查运行 `pnpm collector:health`。它默认关闭，Phase 3 验证只允许 loopback CPA 测试端点和名称包含 `test` 的 loopback PostgreSQL 数据库。配置方式见 [Phase 3 Collector Runbook](docs/phase3-collector.md)。
-
-`/api/sync` 只向持有有效 Lease 且心跳新鲜的 Collector 提交一次拉取命令，不直接读取 CPA 队列。不要把 Collector 与 OMC、CPA Usage Keeper 或 CPA Manager Plus 同时连接到同一个生产 CPA 队列。Phase 3 只负责把原始使用事件可靠落入 Durable Inbox；Phase 4 的 Processor 和 Rollup Worker 是独立进程，均默认关闭。
+查看 [架构决策](docs/architecture.md)、[Phase 3 Collector](docs/phase3-collector.md)、[Phase 4 Processor / Pricing](docs/phase4-processor.md)、[Phase 6 历史导入](docs/phase6-legacy-import.md) 和 [Phase 7 部署验收](docs/phase7-runbook.md)。
 
 ## 预览
 

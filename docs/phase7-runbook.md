@@ -18,8 +18,8 @@ Acceptance gates:
 
 - Web, Processor and Rollup run from one immutable GHCR image in Docker Compose.
 - They join the existing `personal-cloud-hub_default` network and connect to a dedicated Monitor database in the existing PostgreSQL 17 container. They do not use Cloudreve's database or role.
-- CPA binds its RESP/management listener to `127.0.0.1:8317`. The Collector therefore runs in a dedicated Docker Compose `collector` profile using `network_mode: host`; this lets it reach CPA loopback without exposing port 8317. Its default `auto` mode joins the native `SUBSCRIBE usage` broadcast stream alongside OMC/Keeper; it does not consume the FIFO queue unless CPA explicitly rejects SUBSCRIBE.
-- The Collector defaults to RESP Pub/Sub and is designed to coexist with OMC and Keeper subscriptions. It must never switch to FIFO pull while another `SUBSCRIBE usage` client is connected because CPA suppresses FIFO writes whenever subscribers exist.
+- CPA binds its RESP/management listener to `127.0.0.1:8317`. The Collector therefore runs in a dedicated Docker Compose `collector` profile using `network_mode: host`; this lets it reach CPA loopback without exposing port 8317. Production pins `COLLECTOR_MODE=subscribe` and `COLLECTOR_ALLOW_PULL_FALLBACK=false`; it joins the native `SUBSCRIBE usage` broadcast stream alongside OMC/Keeper and never consumes the FIFO queue.
+- The Collector is an independent broadcast subscriber and can coexist with OMC and Keeper. FIFO pull is disabled in production because it is destructive and unsafe while any other Usage subscriber is connected.
 - CI builds and publishes immutable `sha-*` image tags. The production host pulls the exact pinned tag; it does not run Node/pnpm builds.
 
 ## Current production observations (read-only preflight)
@@ -44,11 +44,11 @@ docker compose --env-file .env -f compose.yaml up -d web processor rollup
 docker compose --env-file .env -f compose.yaml ps
 ```
 
-The Collector is excluded from the default Compose profile. Keep it disabled until the dedicated Monitor database, backup/restore and production deployment are approved. At deployment, set `COLLECTOR_ENABLED=true`, `COLLECTOR_MODE=auto`, `CPA_ALLOW_PRODUCTION_TARGET=true`, and `COLLECTOR_ALLOW_PRODUCTION_DATABASE=true` in `.env`, then run `docker compose --profile collector --env-file .env -f compose.yaml up -d collector`. The default subscription mode does not require OMC/Keeper to be disabled.
+The Collector is excluded from the default Compose profile. Keep it disabled until the dedicated Monitor database, backup/restore and production deployment are verified. At deployment, set `COLLECTOR_ENABLED=true`, `COLLECTOR_MODE=subscribe`, `COLLECTOR_ALLOW_PULL_FALLBACK=false`, `CPA_ALLOW_PRODUCTION_TARGET=true`, and `COLLECTOR_ALLOW_PRODUCTION_DATABASE=true` in `.env`, then run `docker compose --profile collector --env-file .env -f compose.yaml up -d collector`. OMC and Keeper remain active broadcast subscribers.
 
 ## Production safety invariants
 
-- Never point the importer at the production database; Phase 6 importer deliberately accepts loopback test PostgreSQL only.
+- Historical import may target production only with both `--allow-production-target` and `PHASE6_IMPORT_ALLOW_PRODUCTION_TARGET=true`; the policy accepts only the exact `postgres` host, `cliproxyapi_monitor` role and `cliproxyapi_monitor` database. Never target Cloudreve or another database.
 - Do not run `drizzle-kit push` against production. Use the reviewed SQL migration runner.
 - Back up the new Monitor database before migrations and before cutover.
 - Keep Cloudreve's existing database, role, data volume and Redis untouched.

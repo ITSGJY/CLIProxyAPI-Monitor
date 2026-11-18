@@ -79,6 +79,7 @@ test("explicit test endpoints are accepted without production permission", () =>
   assert.equal(config.queueName, "usage");
   assert.equal(config.mode, "auto");
   assert.equal(config.allowProductionTarget, false);
+  assert.equal(config.allowPullFallback, false);
   assert.equal(config.redisPort, 19171);
 });
 
@@ -87,4 +88,12 @@ test("Collector supports explicit RESP subscription and explicit FIFO pull modes
   assert.equal(loadCollectorConfig({ ...safeEnv, COLLECTOR_MODE: "subscribe" }).mode, "subscribe");
   assert.equal(loadCollectorConfig({ ...safeEnv, COLLECTOR_MODE: "pull" }).mode, "pull");
   assert.equal(loadCollectorConfig({ ...safeEnv, COLLECTOR_MODE: "pull-first" }).mode, "pull");
+});
+
+test("FIFO fallback requires explicit opt-in and is forbidden for production targets", () => {
+  assert.equal(loadCollectorConfig({ ...safeEnv, COLLECTOR_MODE: "auto", COLLECTOR_ALLOW_PULL_FALLBACK: "true" }).allowPullFallback, true);
+  assert.throws(
+    () => loadCollectorConfig({ ...safeEnv, CPA_REDIS_ADDR: "127.0.0.1:8317", CPA_MANAGEMENT_BASE_URL: "http://127.0.0.1:8317", CPA_ALLOW_PRODUCTION_TARGET: "true", COLLECTOR_ALLOW_PRODUCTION_DATABASE: "true", COLLECTOR_ALLOW_PULL_FALLBACK: "true" }),
+    /FIFO pull fallback is forbidden/
+  );
 });

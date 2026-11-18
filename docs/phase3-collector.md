@@ -6,10 +6,11 @@ Phase 3 owns one responsibility: receive CPA v8 `usage` events and commit each e
 
 - Default transport: RESP `AUTH` + `SUBSCRIBE usage` (native Redis Pub/Sub).
 - Explicit compatibility mode: RESP `LPOP usage <count>` with HTTP `GET /v8/management/observability/usage/queue?count=<count>` fallback only when RESP fails before a destructive pop may have occurred.
-- `COLLECTOR_MODE=auto` prefers subscription. It switches to FIFO pull only when CPA explicitly rejects the `SUBSCRIBE` command. Network failures during an established subscription cause reconnect, never blind LPOP.
-- Persistence: every Pub/Sub payload is sanitized and committed to PostgreSQL `usage_inbox` in its own transaction. Subscription-session attempts track received/persisted counters; Processor remains an independent worker.
+- `auto` prefers subscription. FIFO fallback additionally requires `COLLECTOR_ALLOW_PULL_FALLBACK=true`; this flag is rejected for production CPA or PostgreSQL targets.
+- Production Compose pins `COLLECTOR_MODE=subscribe` and `COLLECTOR_ALLOW_PULL_FALLBACK=false` so a rejected subscription can never silently switch to destructive LPOP.
+- Persistence: every Pub/Sub payload is sanitized and committed to PostgreSQL `usage_inbox` in its own transaction. Subscription-session attempts track received/persisted counters and the exact `subscribed_at` acknowledgement timestamp; Processor remains an independent worker.
 - Processor: deliberately not started by this process. Normalization, idempotent event creation and pricing are the separate Phase 4 worker.
-- Production cutover: not part of Phase 3. OMC, Keeper, CPAMP and production CPA configuration remain unchanged.
+- Production subscription can coexist with OMC and CPA Usage Keeper. Pull compatibility requires a coordinated single-consumer window.
 
 CPA v8.0.75 does not implement RESP `LLEN`. Empty polls therefore receive a Pull Attempt audit row too; empty rows are retained for seven days and pruned automatically.
 
@@ -33,13 +34,14 @@ Required variables when enabled:
 Optional bounds:
 
 - `CPA_USAGE_QUEUE=usage` — other queue names are rejected
-- `COLLECTOR_MODE=auto` — RESP subscription first; `subscribe` forces Pub/Sub; `pull`/`pull-first` forces FIFO polling
+- `COLLECTOR_MODE=subscribe` — production native Pub/Sub; `auto` is for isolated compatibility tests; `pull` / `pull-first` explicitly force FIFO polling
+- `COLLECTOR_ALLOW_PULL_FALLBACK=false` — explicit test-only opt-in; forbidden with production CPA or PostgreSQL flags
 - `COLLECTOR_POLL_INTERVAL_MS=10000`
 - `COLLECTOR_BATCH_SIZE=100` — maximum 1000
 - `COLLECTOR_LEASE_SECONDS=60` — minimum `max(60, 3 × poll interval in seconds)`
 - `COLLECTOR_HEALTH_STALE_AFTER_MS` — defaults to `max(60 seconds, 3 × poll interval)`
 
-The Collector performs a database readiness query at startup and commits a Subscription Attempt before subscribing, or a Pull Attempt before each destructive queue operation. If PostgreSQL cannot accept the audit row, it does not connect/subscribe or issue a queue pop.
+The Collector performs a database readiness query at startup and commits a Subscription Attempt before subscribing. The database records the server-acknowledged `subscribed_at` timestamp so the OMC history snapshot can be reconciled at the production handover boundary.
 
 ## Run and inspect
 
@@ -67,9 +69,9 @@ The health command exits non-zero unless the Collector has a fresh heartbeat, a 
 
 ## Retry and recovery contract
 
-1. `auto` authenticates and subscribes to `usage`. An explicit RESP server rejection of `SUBSCRIBE` is recorded and permits compatibility fallback to FIFO pull. Authentication failures and network failures do not trigger pull fallback.
+1. `auto` authenticates and subscribes to `usage`. It only switches to FIFO after an explicit server rejection and explicit `COLLECTOR_ALLOW_PULL_FALLBACK=true`; production flags make this combination invalid.
 2. Each Pub/Sub message is persisted to Inbox before the callback completes. The stream has no server acknowledgement, replay cursor or redelivery guarantee.
-3. A disconnect after the subscription acknowledgement marks the session interrupted and writes an `usage_ingest_gaps` row with unknown missing count. The Collector reconnects with capped exponential backoff; it never LPOP while in subscription mode.
+3. A disconnect after the subscription acknowledgement marks the session interrupted and writes an `usage_ingest_gaps` row with unknown missing count. The Collector reconnects with capped exponential backoff; it never LPOP in production subscription mode.
 4. If PostgreSQL fails after a message is delivered, the session is terminated and a gap is recorded. Already committed Inbox rows remain durable; the in-flight message may be lost because CPA Pub/Sub is at-most-once.
 5. Explicit `pull` mode uses RESP LPOP and HTTP fallback only before uncertain destructive consumption. A timeout/disconnect after the pop command may have been sent is marked uncertain; HTTP fallback is forbidden.
 6. The Collector renews its lease and heartbeat while the subscription is open, including periods with no usage events.

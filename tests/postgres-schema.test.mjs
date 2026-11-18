@@ -12,6 +12,7 @@ import {
   markCollectorStopped,
   markInterruptedPullAttempts,
   markPullAttemptFailed,
+  markSubscriptionEstablished,
   persistPulledBatch,
   persistSubscribedUsageEvent,
   completeSubscriptionAttempt,
@@ -95,6 +96,25 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     assert.equal(await acquireCollectorLease(scopedPool, config.instanceId, "worker-a", 30), true);
     assert.equal(await acquireCollectorLease(scopedPool, config.instanceId, "worker-b", 30), false);
     await heartbeatCollectorState(scopedPool, config.instanceId, "worker-a", "receiving", 30);
+    const subscriptionAckAttempt = await createPullAttempt(scopedPool, {
+      instanceId: config.instanceId,
+      transport: "resp-subscribe",
+      requestedCount: 100
+    });
+    const subscriptionAck = await markSubscriptionEstablished(scopedPool, {
+      attemptId: subscriptionAckAttempt,
+      instanceId: config.instanceId,
+      workerId: "worker-a",
+      leaseSeconds: 30
+    });
+    assert.ok(Date.parse(subscriptionAck.subscribed_at), "server SUBSCRIBE acknowledgement time must be persisted");
+    const subscriptionAudit = await scopedPool.query(
+      "SELECT metadata->>'subscribed_at' AS subscribed_at FROM usage_pull_attempts WHERE id = $1",
+      [subscriptionAckAttempt]
+    );
+    assert.equal(subscriptionAudit.rows[0].subscribed_at, subscriptionAck.subscribed_at);
+    await completeSubscriptionAttempt(scopedPool, subscriptionAckAttempt);
+
     await assert.rejects(
       ensureCollectorInstance(scopedPool, { ...config, managementBaseUrl: "http://127.0.0.1:19172" }),
       /registration does not match/

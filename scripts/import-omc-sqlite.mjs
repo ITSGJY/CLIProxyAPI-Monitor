@@ -4,6 +4,7 @@ import { createReadStream } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import pg from "pg";
+import { validateImportTarget } from "./import-target-policy.mjs";
 
 const { Pool } = pg;
 const SOURCE_KEY = "oh-my-cpa:default";
@@ -31,13 +32,6 @@ function getManifest(source) {
   const result = spawnSync("python3", ["scripts/omc-sqlite-source.py", "manifest", "--source", source], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
   if (result.status !== 0) throw new Error((result.stderr || result.stdout || "Unable to inspect OMC SQLite source").trim());
   return JSON.parse(result.stdout);
-}
-function validateTarget(databaseUrl) {
-  const url = new URL(databaseUrl);
-  const database = decodeURIComponent(url.pathname.replace(/^\//, ""));
-  if (!["127.0.0.1", "localhost", "::1"].includes(url.hostname) || !database.toLowerCase().includes("test")) {
-    throw new Error("Phase 6 importer only permits a loopback PostgreSQL database whose name contains 'test'");
-  }
 }
 function safeJson(value) { return value === null || value === undefined ? null : JSON.stringify(value); }
 
@@ -190,7 +184,10 @@ async function main() {
   const source = required(arg("--source"), "--source");
   const databaseUrl = required(process.env.DATABASE_URL, "DATABASE_URL");
   const batchSize = Math.min(1000, Math.max(1, Number(arg("--batch-size", String(BATCH_SIZE_DEFAULT))) || BATCH_SIZE_DEFAULT));
-  validateTarget(databaseUrl);
+  validateImportTarget(databaseUrl, {
+    allowProductionTarget: process.argv.includes("--allow-production-target"),
+    productionEnvironmentOptIn: process.env.PHASE6_IMPORT_ALLOW_PRODUCTION_TARGET === "true"
+  });
   const sourceHash = await sha256File(source);
   const manifest = getManifest(source);
   if (await sha256File(source) !== sourceHash) throw new Error("Source snapshot changed during preflight");

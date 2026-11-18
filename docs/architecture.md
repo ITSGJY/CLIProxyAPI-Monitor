@@ -1,63 +1,59 @@
-# CLIProxyAPI-Monitor Plus Architecture (v2.0)
+# CLIProxyAPI-Monitor Plus Architecture (v2.1)
 
 ## Scope
 
-This repository is a personal fork of CLIProxyAPI-Monitor. It retains the original Overview, Explore and Records experience while replacing the legacy `/usage` + in-memory adapter ingestion path with a request-level CPA v8 collector and PostgreSQL persistence.
+This is a personal fork of CLIProxyAPI-Monitor. It retains the original Overview, Explore and Records experience while replacing the legacy `/usage` adapter with a CPA v8 request-level Collector, a PostgreSQL durable Inbox, an independent Processor and versioned pricing / Rollup services.
 
-The production data store is PostgreSQL 17. SQLite is not used as a production journal or intermediate write buffer.
+The production data store and durable Inbox are PostgreSQL 17. The final design intentionally does not use a local SQLite spool; see [ADR-001](decisions/ADR-001-postgres-durable-inbox.md). A PostgreSQL outage can interrupt the at-most-once CPA stream, so the Collector records a gap rather than claiming lossless delivery.
 
 ## Data flow
 
 ```text
 CLIProxyAPI v8
   |
-  | RESP AUTH + LPOP usage (primary)
-  | HTTP GET /v8/management/observability/usage/queue (fallback)
+  | RESP AUTH + SUBSCRIBE usage (production primary)
+  | RESP LPOP / HTTP Usage Queue (explicit single-consumer compatibility only)
   v
-Collector
+Independent Collector
   |
-  | one PostgreSQL bulk INSERT transaction per pulled batch
+  | one PostgreSQL transaction per received Pub/Sub event
   v
 usage_pull_attempts + usage_inbox (durable, sanitized payloads)
   |
-  | Phase 4: independent Processor Worker, per-row lease/retry
+  | Processor Worker, per-row lease / retry
   v
 usage_event_identity (global idempotency ledger)
   |
   v
 usage_events (monthly range partitions)
   |
-  +--> versioned model prices
+  +--> immutable versioned model prices and request cost snapshots
   |
-  +--> Phase 4 Rollup Worker --> rebuildable hourly / daily rollups
+  +--> Rollup Worker --> rebuildable hourly / daily rollups
+  |
+  +--> Overview / Explore / Records read APIs
 ```
 
-The Collector is disabled by default. It has no default CPA host, port, management key or database URL. Phase 3 validation requires loopback CPA test endpoints and a loopback PostgreSQL database whose name contains `test`. Port 8317 is blocked unless `CPA_ALLOW_PRODUCTION_TARGET=true` is explicitly supplied; a non-test database additionally requires `COLLECTOR_ALLOW_PRODUCTION_DATABASE=true`. Both flags are reserved for a separately approved Phase 7 production cutover.
+The Collector is disabled by default. Phase 3 validation uses loopback CPA test endpoints and a loopback PostgreSQL database whose name contains `test`. Port 8317 and non-test databases require their respective explicit production flags. Production Compose pins `COLLECTOR_MODE=subscribe` and `COLLECTOR_ALLOW_PULL_FALLBACK=false`.
 
-## CPA v8 queue semantics
+## CPA v8 Usage delivery semantics
 
-The verified CPA v8 implementation exposes:
+The verified CPA v8 implementation exposes RESP `AUTH`, `SUBSCRIBE usage`, `LPOP usage <count>`, and the Management Usage Queue HTTP endpoint. The RESP interface is not a complete Redis server; do not depend on `LLEN`, `INFO`, `BLPOP` or other undocumented commands.
 
-- RESP AUTH followed by `LPOP usage <count>`; CPA v8.0.75 does not implement `LLEN`.
-- HTTP `GET /v8/management/observability/usage/queue?count=<count>`.
-- Both pull operations consume queue items.
-- CPA's in-memory queue broadcasts to active SUBSCRIBE clients and skips normal queue enqueue while subscribers exist.
-
-Therefore:
-
-1. There must be one authoritative production consumer per CPA instance.
-2. The production mode is Pull-first: RESP AUTH + LPOP usage; HTTP GET is used only when the RESP transport fails before a destructive pop may have occurred.
-3. CPA v8.0.75 does not implement RESP LLEN. The Collector therefore records a pull attempt before each LPOP, including empty polls; empty-attempt rows are pruned after seven days.
-4. SUBSCRIBE remains experimental and must not run alongside the production Pull collector.
-5. Do not start the new collector beside OMC, Keeper or CPAMP. Their existing collectors must be retired in a separately approved cutover.
+- `SUBSCRIBE usage` broadcasts each event to every connected subscriber.
+- While at least one Usage subscriber is connected, CPA does not enqueue those events in its FIFO Usage Queue.
+- `LPOP usage` and the HTTP Usage Queue endpoint are destructive reads.
+- Production must use native Subscription so Monitor can coexist with OMC and CPA Usage Keeper.
+- FIFO pull is permitted only in a separately coordinated single-consumer window after every other Usage subscriber is confirmed stopped.
+- `auto` fallback is disabled by default and requires explicit `COLLECTOR_ALLOW_PULL_FALLBACK=true`; configuration rejects this option whenever either production target flag is enabled.
 
 ## Delivery guarantee and loss window
 
-LPOP is destructive and CPA does not provide a transactional acknowledgement spanning CPA and PostgreSQL. The durable inbox guarantees replayable processing **after** the inbox transaction commits; it cannot make the CPA pop and PostgreSQL commit atomic.
+CPA Pub/Sub is at-most-once. It has no server ACK, replay cursor or consumer-group semantics. The Collector records the Subscription Attempt and the exact `subscribed_at` acknowledgement time, then commits every received, sanitized event to PostgreSQL `usage_inbox` before the message callback completes.
 
-Because CPA v8.0.75 exposes LPOP but not LLEN, the Collector commits a pull-attempt record before each destructive poll. Empty polls are audited and pruned after seven days. Non-empty batches are sanitized and bulk-inserted into `usage_inbox` in one PostgreSQL transaction; the pull-attempt completion and Collector success state commit in that same transaction. The Collector does not run the Processor; Phase 4 owns a separate worker. A PostgreSQL lease permits only one Collector worker for a CPA instance and is refreshed during long poll intervals and retry backoff. If a process dies after LPOP but before inbox commit, startup recovery marks the attempt interrupted and writes a gap record. If the process detects uncertain consumption itself, it writes the gap and exits non-zero so the service supervisor can restart it. This makes the uncertainty observable; it cannot recover an item that CPA has already removed.
+The PostgreSQL Inbox guarantees replayable processing after its transaction commits. If PostgreSQL fails after CPA has delivered an event, the in-flight event may be lost; the Collector closes the session, records an `usage_ingest_gaps` row with an unknown missing count and reconnects with capped backoff. The durable Inbox cannot make CPA delivery and PostgreSQL commit atomic. Never describe this path as end-to-end zero-loss.
 
-The Collector must never issue HTTP fallback after a successful RESP pop whose PostgreSQL persistence failed, because that would consume a second batch and obscure the first failure.
+The optional FIFO compatibility path records a Pull Attempt before each destructive pop. A disconnect after a pop may have been sent is uncertain consumption; HTTP fallback is forbidden in that state. Empty pull attempts are audited and pruned after seven days.
 
 ## PostgreSQL tables
 
@@ -101,16 +97,16 @@ Historical imports must use a common source-instance identity and the same ident
 
 ## Connection budget
 
-The dedicated PostgreSQL host has a 30-connection server limit and 1 GB RAM. Initial application budgets:
+The existing PostgreSQL 17 container reported `max_connections=100` during the latest preflight. Application pools remain deliberately small because this database is shared with the Personal Cloud Hub workload:
 
 - Web application pool: maximum 3.
 - Collector pool: maximum 2.
 - Processor pool: maximum 2.
 - Rollup pool: maximum 1.
-- Collector health CLI pool: maximum 1, short-lived.
+- Health CLI: maximum 1, short-lived.
 - Migration / operator connections: temporary and serialized.
 
-Do not increase these defaults without observing `pg_stat_activity` and measuring memory under realistic dashboard queries.
+Keep the Monitor's steady-state application budget at or below 9 connections. Do not increase pool defaults without observing `pg_stat_activity`, memory and dashboard query latency.
 
 ## Migration and deployment
 
@@ -118,5 +114,6 @@ Do not increase these defaults without observing `pg_stat_activity` and measurin
 - `pnpm build` must not mutate a database.
 - Run `pnpm db:migrate` as a separate, deliberate operation.
 - Never use `drizzle-kit push` against production.
-- CI uses an ephemeral PostgreSQL 17 service and a dedicated `cpa_monitor_test` database.
-- Production database, roles, backups, CPA configuration and existing collectors remain untouched until a separate cutover approval.
+- CI uses an ephemeral PostgreSQL 17 service and a dedicated test database.
+- Production uses a dedicated database and role inside the existing PostgreSQL service; Cloudreve's database, role and volume remain untouched.
+- Production Collector uses `SUBSCRIBE`; it does not stop or compete with other broadcast subscribers. FIFO pull remains a separately coordinated compatibility mode.
