@@ -144,9 +144,11 @@ jobs:
       matrix:
         include:
           - arch: amd64
+            node_arch: x64
             platform: linux/amd64
             runner: ubuntu-latest
           - arch: arm64
+            node_arch: arm64
             platform: linux/arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
@@ -177,7 +179,7 @@ jobs:
       - name: Verify native architecture and migration runtime
         env:
           IMAGE: ghcr.io/itsgjy/cliproxyapi-monitor:sha-${{ github.sha }}-${{ matrix.arch }}
-          EXPECTED_ARCH: ${{ matrix.arch }}
+          EXPECTED_ARCH: ${{ matrix.node_arch }}
         run: |
           docker pull "$IMAGE"
           docker run --rm -e EXPECTED_ARCH="$EXPECTED_ARCH" "$IMAGE" node -e 'if (process.arch !== process.env.EXPECTED_ARCH) process.exit(1); console.log(process.arch + " runtime verified")'
