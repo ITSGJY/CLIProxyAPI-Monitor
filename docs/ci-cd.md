@@ -10,14 +10,15 @@
 - disposable PostgreSQL migrations and authenticated Playwright browser acceptance
 - PostgreSQL 17 container restart durability test
 
-Pushes to `main` and `feat/phase6-legacy-import`, plus manual workflow dispatches, then build and publish an immutable `sha-<7>` image to GHCR for both `linux/amd64` and `linux/arm64`. The workflow checks the ARM64 manifest/runtime and launches a container smoke test.
+Pushes to `main` and `feat/phase6-legacy-import`, plus manual workflow dispatches, build immutable per-architecture images on native GitHub-hosted AMD64 and ARM64 runners. The workflow then assembles the `sha-<7>` multi-architecture manifest in GHCR, verifies both platforms and the migration runtime, and runs a container smoke test.
 
 Production deployment runs only after every validation and image job succeeds:
 
 - Push to `main`: automatic production deployment.
 - Feature branch: build and publish only; use `workflow_dispatch` with `deploy_production=true` to deploy that exact tested commit.
 - Pull requests: validation only; no GHCR push and no production secrets.
-- A production concurrency group prevents overlapping deployments.- `main` is protected: pull requests must be up to date and pass both the PostgreSQL 17 restart check and the full test / browser-acceptance check. Force pushes and branch deletion are disabled; conversation resolution is required.
+- A production concurrency group prevents overlapping deployments.
+- `main` is protected: pull requests must be up to date and pass both the PostgreSQL 17 restart check and the full test / browser-acceptance check. Force pushes and branch deletion are disabled; conversation resolution is required.
 - The `production` GitHub Environment permits deployment only from `main` and `feat/phase6-legacy-import`.
 
 ## Restricted deployment access

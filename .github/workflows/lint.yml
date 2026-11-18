@@ -133,21 +133,29 @@ jobs:
           docker rm -f phase7-postgres-restart 2>/dev/null || true
           docker volume rm phase7-postgres-restart-data 2>/dev/null || true
 
-  build-and-smoke:
-    name: Build and publish immutable multi-architecture image
+  build-platform:
+    name: Build and verify ${{ matrix.arch }} image on native runner
     needs:
       - validate
       - postgres-restart
     if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/phase6-legacy-import')) || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Set up QEMU for ARM64 builds
-        uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Log in to GitHub Container Registry
@@ -156,40 +164,70 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Docker image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/itsgjy/cliproxyapi-monitor
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=sha-
-            type=raw,value=latest,enable={{is_default_branch}}
-      - name: Build and publish immutable AMD64 and ARM64 image
+      - name: Build and publish native architecture image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Verify ARM64 manifest and runtime
+          tags: ghcr.io/itsgjy/cliproxyapi-monitor:sha-${{ github.sha }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=monitor-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=monitor-${{ matrix.arch }}
+      - name: Verify native architecture and migration runtime
+        env:
+          IMAGE: ghcr.io/itsgjy/cliproxyapi-monitor:sha-${{ github.sha }}-${{ matrix.arch }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
         run: |
-          IMAGE=ghcr.io/itsgjy/cliproxyapi-monitor:sha-${GITHUB_SHA::7}
-          docker buildx imagetools inspect "$IMAGE" | tee /tmp/monitor-image-manifest.txt
-          grep -q 'linux/arm64' /tmp/monitor-image-manifest.txt
-          docker run --rm --platform linux/arm64 "$IMAGE" node -e 'if (process.arch !== "arm64") process.exit(1); console.log("ARM64 runtime verified")'
-      - name: Verify production migration runtime dependencies
-        run: |
-          IMAGE=ghcr.io/itsgjy/cliproxyapi-monitor:sha-${GITHUB_SHA::7}
+          docker pull "$IMAGE"
+          docker run --rm "$IMAGE" node -e 'if (process.arch !== process.env.EXPECTED_ARCH) process.exit(1); console.log(process.arch + " runtime verified")'
           docker run --rm "$IMAGE" node --input-type=module -e 'await import("drizzle-orm/node-postgres/migrator"); await import("pg"); console.log("PostgreSQL migration runtime verified")'
-      - name: Smoke test published container
+
+  publish-manifest:
+    name: Publish and smoke-test multi-architecture manifest
+    needs: build-platform
+    if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/phase6-legacy-import')) || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create immutable multi-architecture manifest
+        env:
+          IMAGE: ghcr.io/itsgjy/cliproxyapi-monitor
         run: |
-          IMAGE=ghcr.io/itsgjy/cliproxyapi-monitor:sha-${GITHUB_SHA::7}
-          docker run -d --name monitor-container-smoke -p 127.0.0.1:3000:3000 -e PASSWORD=phase7-container-smoke-password -e CRON_SECRET=phase7-container-smoke-cron "$IMAGE"
+          docker buildx imagetools create \
+            --tag "$IMAGE:sha-${GITHUB_SHA::7}" \
+            "$IMAGE:sha-${GITHUB_SHA::7}-amd64" \
+            "$IMAGE:sha-${GITHUB_SHA::7}-arm64"
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            docker buildx imagetools create \
+              --tag "$IMAGE:latest" \
+              "$IMAGE:sha-${GITHUB_SHA::7}-amd64" \
+              "$IMAGE:sha-${GITHUB_SHA::7}-arm64"
+          fi
+      - name: Verify published manifest contains both architectures
+        env:
+          IMAGE: ghcr.io/itsgjy/cliproxyapi-monitor:sha-${{ github.sha }}
+        run: |
+          docker buildx imagetools inspect "$IMAGE" | tee /tmp/monitor-image-manifest.txt
+          grep -q 'linux/amd64' /tmp/monitor-image-manifest.txt
+          grep -q 'linux/arm64' /tmp/monitor-image-manifest.txt
+      - name: Smoke test published application container
+        env:
+          IMAGE: ghcr.io/itsgjy/cliproxyapi-monitor:sha-${{ github.sha }}
+        run: |
+          docker run -d --name monitor-container-smoke -p 127.0.0.1:3000:3000 \
+            -e PASSWORD=phase7-container-smoke-password \
+            -e CRON_SECRET=phase7-container-smoke-cron "$IMAGE"
           for attempt in $(seq 1 45); do
             if curl -fsS http://127.0.0.1:3000/login >/dev/null; then exit 0; fi
             sleep 1
@@ -201,7 +239,7 @@ jobs:
         run: docker rm -f monitor-container-smoke 2>/dev/null || true
   deploy-production:
     name: Deploy verified image to Oracle production
-    needs: build-and-smoke
+    needs: publish-manifest
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.deploy_production)
     runs-on: ubuntu-latest
     environment: production
