@@ -36,10 +36,9 @@ COPY --from=builder --chown=nextjs:nodejs /app/lib ./lib
 COPY --from=builder --chown=nextjs:nodejs /app/drizzle ./drizzle
 COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
 # Migration scripts use dynamic imports that Next.js standalone tracing cannot
-# discover. Ship the migration runtime explicitly in the production image.
+# discover. Ship the migration runtime explicitly; GitHub Actions validates the
+# final image on the native runner before production deployment.
 COPY --from=deps --chown=nextjs:nodejs /app/node_modules/drizzle-orm ./node_modules/drizzle-orm
-RUN node --input-type=module -e 'await import("drizzle-orm/node-postgres/migrator"); await import("pg"); console.log("PostgreSQL migration runtime verified")'
-
 USER nextjs
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
