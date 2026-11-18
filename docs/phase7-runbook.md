@@ -20,6 +20,7 @@ Acceptance gates:
 - They join the existing `personal-cloud-hub_default` network and connect to a dedicated Monitor database in the existing PostgreSQL 17 container. They do not use Cloudreve's database or role.
 - CPA binds its RESP/management listener to `127.0.0.1:8317`. The Collector therefore runs in a dedicated Docker Compose `collector` profile using `network_mode: host`; this lets it reach CPA loopback without exposing port 8317. Production pins `COLLECTOR_MODE=subscribe` and `COLLECTOR_ALLOW_PULL_FALLBACK=false`; it joins the native `SUBSCRIBE usage` broadcast stream alongside OMC/Keeper and never consumes the FIFO queue.
 - The Collector is an independent broadcast subscriber and can coexist with OMC and Keeper. FIFO pull is disabled in production because it is destructive and unsafe while any other Usage subscriber is connected.
+- CPA v8 sends `{"support_refresh":true}` immediately after `SUBSCRIBE usage` and can send `{"refresh":true}` control frames later. These are control notifications, not usage records; the Collector must ignore them before Inbox persistence. Regression tests cover both frames.
 - CI builds and publishes immutable `sha-*` image tags. The production host pulls the exact pinned tag; it does not run Node/pnpm builds.
 
 ## Current production observations (read-only preflight)

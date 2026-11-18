@@ -43,6 +43,8 @@ old_image="$MONITOR_IMAGE"
 web_was_running="$(docker inspect --format '{{.State.Running}}' cliproxyapi-monitor-web 2>/dev/null || echo false)"
 processor_was_running="$(docker inspect --format '{{.State.Running}}' cliproxyapi-monitor-processor 2>/dev/null || echo false)"
 rollup_was_running="$(docker inspect --format '{{.State.Running}}' cliproxyapi-monitor-rollup 2>/dev/null || echo false)"
+collector_was_running="$(docker inspect --format '{{.State.Running}}' cliproxyapi-monitor-collector 2>/dev/null || echo false)"
+
 python3 - "$DEPLOY_DIR/.env" "$NEW_IMAGE" <<'PY'
 import os, sys, tempfile
 path, image = sys.argv[1:]
@@ -95,12 +97,15 @@ PY
   if [[ "$web_was_running" == "true" ]]; then services+=(web); fi
   if [[ "$processor_was_running" == "true" ]]; then services+=(processor); fi
   if [[ "$rollup_was_running" == "true" ]]; then services+=(rollup); fi
+  if [[ "$collector_was_running" == "true" ]]; then services+=(collector); fi
   if (( ${#services[@]} > 0 )); then
-    docker compose --env-file .env -f compose.yaml up -d "${services[@]}" || true
+    docker compose --profile collector --env-file .env -f compose.yaml up -d "${services[@]}" || true
   fi
 }
 echo "image_pull_start=true"
-if ! docker compose --env-file .env -f compose.yaml pull web processor rollup; then
+pull_services=(web processor rollup)
+if [[ "$collector_was_running" == "true" ]]; then pull_services+=(collector); fi
+if ! docker compose --profile collector --env-file .env -f compose.yaml pull "${pull_services[@]}"; then
   rollback_application
   fail "image pull failed; previous application image restored"
 fi
@@ -110,21 +115,31 @@ if ! docker compose --env-file .env -f compose.yaml run --rm --no-deps web node 
   fail "database migration failed; previous application image restored; inspect migration logs and backup"
 fi
 echo "application_rollout_start=true"
-if ! docker compose --env-file .env -f compose.yaml up -d web processor rollup; then
+rollout_services=(web processor rollup)
+if [[ "$collector_was_running" == "true" ]]; then rollout_services+=(collector); fi
+if ! docker compose --profile collector --env-file .env -f compose.yaml up -d "${rollout_services[@]}"; then
   rollback_application
   fail "application rollout failed; previous application image restored"
 fi
 healthy=false
 for attempt in $(seq 1 60); do
   state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' cliproxyapi-monitor-web 2>/dev/null || true)"
-  if [[ "$state" == "healthy" ]] && curl -fsS --max-time 5 http://127.0.0.1:15300/login >/dev/null; then
+  collector_state=healthy
+  if [[ "$collector_was_running" == "true" ]]; then
+    collector_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' cliproxyapi-monitor-collector 2>/dev/null || true)"
+  fi
+  if [[ "$state" == "healthy" && "$collector_state" == "healthy" ]] && curl -fsS --max-time 5 http://127.0.0.1:15300/login >/dev/null; then
     healthy=true
     break
   fi
   sleep 2
 done
 if [[ "$healthy" != true ]]; then
-  docker compose --env-file .env -f compose.yaml logs --tail 80 web processor rollup >&2 || true
+  if [[ "$collector_was_running" == "true" ]]; then
+    docker compose --profile collector --env-file .env -f compose.yaml logs --tail 80 web processor rollup collector >&2 || true
+  else
+    docker compose --env-file .env -f compose.yaml logs --tail 80 web processor rollup >&2 || true
+  fi
   rollback_application
   fail "new application did not become healthy; previous application image restored"
 fi

@@ -55,9 +55,11 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           script = Path("deploy/scripts/monitor-deploy.sh").read_text()
-          assert script.index('export MONITOR_IMAGE="$NEW_IMAGE"') < script.index('docker compose --env-file .env -f compose.yaml pull web processor rollup')
-          assert script.index('export MONITOR_IMAGE="$old_image"') < script.index('docker compose --env-file .env -f compose.yaml up -d "${services[@]}"')
-          print("deployment image override and rollback precedence verified")
+          assert script.index('export MONITOR_IMAGE="$NEW_IMAGE"') < script.index('docker compose --profile collector --env-file .env -f compose.yaml pull')
+          assert script.index('export MONITOR_IMAGE="$old_image"') < script.index('docker compose --profile collector --env-file .env -f compose.yaml up -d "${services[@]}"')
+          assert 'collector_was_running=' in script and 'pull_services+=(collector)' in script and 'rollout_services+=(collector)' in script
+          assert 'collector_state' in script
+          print("deployment image override, rollback and collector preservation verified")
           PY
       - name: Run Collector unit tests
         run: pnpm test

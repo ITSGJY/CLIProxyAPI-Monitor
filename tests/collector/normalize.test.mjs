@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   hashRawPayload,
+  usageControlMessageKind,
   normalizeUsageRecord,
   sanitizeUsagePayload
 } from "../../lib/collector/normalize.mjs";
@@ -20,6 +21,15 @@ const baseRecord = {
     total_tokens: 125
   }
 };
+
+test("recognizes CPA RESP control messages without classifying usage records as control", () => {
+  assert.equal(usageControlMessageKind('{"support_refresh":true}'), "support_refresh");
+  assert.equal(usageControlMessageKind('{"refresh":true}'), "refresh");
+  assert.equal(usageControlMessageKind(baseRecord), null);
+  assert.equal(usageControlMessageKind('{"support_refresh":true,"timestamp":"2026-11-17T00:00:00Z"}'), null);
+  assert.equal(usageControlMessageKind("not-json"), null);
+});
+
 
 test("normalization stores only a masked API key and redacted raw payload", () => {
   const normalized = normalizeUsageRecord(baseRecord, {
