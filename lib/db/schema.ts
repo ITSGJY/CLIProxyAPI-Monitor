@@ -95,7 +95,7 @@ export const usageCollectorInstances = pgTable("usage_collector_instances", {
   displayName: text("display_name").notNull(),
   managementBaseUrl: text("management_base_url").notNull(),
   queueName: text("queue_name").notNull().default("usage"),
-  collectorMode: text("collector_mode").notNull().default("pull_first"),
+  collectorMode: text("collector_mode").notNull().default("subscribe"),
   enabled: boolean("enabled").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull()

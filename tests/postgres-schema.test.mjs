@@ -13,6 +13,9 @@ import {
   markInterruptedPullAttempts,
   markPullAttemptFailed,
   persistPulledBatch,
+  persistSubscribedUsageEvent,
+  completeSubscriptionAttempt,
+  interruptSubscriptionAttempt,
   processInboxBatch,
   pruneEmptyPullAttempts
 } from "../lib/collector/postgres-store.mjs";
@@ -51,7 +54,8 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
         "0004_add_auth_file_mappings.sql",
         "0005_usage_pipeline.sql",
         "0006_phase5_dashboard_rollup_dimensions.sql",
-        "0007_phase6_legacy_import.sql"
+        "0007_phase6_legacy_import.sql",
+        "0008_resp_subscription.sql"
       ];
       for (const migration of migrations) {
         const sql = await readFile(new URL("../drizzle/" + migration, import.meta.url), "utf8");
@@ -83,7 +87,8 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
       instanceId: "test-cpa",
       displayName: "Isolated CPA test instance",
       managementBaseUrl: "http://127.0.0.1:19171",
-      queueName: "usage"
+      queueName: "usage",
+      mode: "pull"
     };
     await ensureCollectorInstance(scopedPool, config);
 
@@ -620,6 +625,75 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
       "SELECT count(*)::int AS count FROM usage_events WHERE request_id='phase7-expired-processor-lease'"
     );
     assert.equal(reclaimedEvent.rows[0].count, 1);
+
+    // Native RESP Pub/Sub events enter the same durable Inbox and Processor pipeline.
+    const subscriptionConfig = {
+      ...config,
+      instanceId: "test-cpa-subscription",
+      mode: "subscribe"
+    };
+    await ensureCollectorInstance(scopedPool, subscriptionConfig);
+    const subscriptionAttempt = await createPullAttempt(scopedPool, {
+      instanceId: subscriptionConfig.instanceId,
+      transport: "resp-subscribe",
+      requestedCount: 1
+    });
+    const subscriptionRecord = {
+      ...record,
+      request_id: "phase7-resp-subscription-event",
+      timestamp: new Date().toISOString()
+    };
+    await persistSubscribedUsageEvent(scopedPool, {
+      attemptId: subscriptionAttempt,
+      instanceId: subscriptionConfig.instanceId,
+      item: JSON.stringify(subscriptionRecord)
+    });
+    const subscriptionCounters = await scopedPool.query(
+      "SELECT received_count, persisted_count, status FROM usage_pull_attempts WHERE id=$1",
+      [subscriptionAttempt]
+    );
+    assert.equal(Number(subscriptionCounters.rows[0].received_count), 1);
+    assert.equal(Number(subscriptionCounters.rows[0].persisted_count), 1);
+    assert.equal(subscriptionCounters.rows[0].status, "started");
+    const beforeSubscriptionProcess = await scopedPool.query(
+      "SELECT id, status, available_at, instance_id FROM usage_inbox WHERE pull_attempt_id=$1",
+      [subscriptionAttempt]
+    );
+    assert.equal(beforeSubscriptionProcess.rowCount, 1, "subscription event must be present in the durable Inbox");
+    const subscriptionProcessed = await processInboxBatch(scopedPool, {
+      instanceId: subscriptionConfig.instanceId,
+      workerId: "subscription-processor",
+      batchSize: 10
+    });
+    const afterSubscriptionProcess = await scopedPool.query(
+      "SELECT status, last_error_code, last_error_message FROM usage_inbox WHERE pull_attempt_id=$1",
+      [subscriptionAttempt]
+    );
+    assert.equal(subscriptionProcessed.processed, 1, JSON.stringify({ summary: subscriptionProcessed, inbox: beforeSubscriptionProcess.rows, after: afterSubscriptionProcess.rows }));
+    const subscriptionEvent = await scopedPool.query(
+      "SELECT count(*)::int AS count FROM usage_events WHERE request_id='phase7-resp-subscription-event'"
+    );
+    assert.equal(subscriptionEvent.rows[0].count, 1);
+    const subscriptionSummary = await completeSubscriptionAttempt(scopedPool, subscriptionAttempt);
+    assert.equal(Number(subscriptionSummary.received_count), 1);
+
+    const interruptedSubscription = await createPullAttempt(scopedPool, {
+      instanceId: subscriptionConfig.instanceId,
+      transport: "resp-subscribe",
+      requestedCount: 1
+    });
+    await interruptSubscriptionAttempt(scopedPool, {
+      attemptId: interruptedSubscription,
+      instanceId: subscriptionConfig.instanceId,
+      startedAt: new Date(),
+      error: new Error("test subscription disconnect")
+    });
+    const subscriptionGap = await scopedPool.query(
+      "SELECT reason, details->>'missing_count' AS missing_count FROM usage_ingest_gaps WHERE pull_attempt_id=$1",
+      [interruptedSubscription]
+    );
+    assert.equal(subscriptionGap.rows[0].reason, "resp_subscription_disconnected");
+    assert.equal(subscriptionGap.rows[0].missing_count, "unknown");
 
     // Terminate one PostgreSQL backend; the pool must reconnect on the next query.
     const doomedClient = await scopedPool.connect();

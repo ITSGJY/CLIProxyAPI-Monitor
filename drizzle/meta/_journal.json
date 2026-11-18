@@ -57,6 +57,13 @@
       "when": 1795020000000,
       "tag": "0007_phase6_legacy_import",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795106400000,
+      "tag": "0008_resp_subscription",
+      "breakpoints": true
     }
   ]
 }

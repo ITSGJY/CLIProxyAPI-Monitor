@@ -340,3 +340,13 @@
 - 增加 Collector 进程重启、PostgreSQL backend 断连恢复、过期 Processor Lease 回收等故障验证。
 - 生产预检发现 OMC 与 Keeper 使用 CPA `SUBSCRIBE usage`；CPA 在有订阅者时不写 FIFO 队列。保持现有服务不动，明确切换前必须停止/禁用旧订阅者。
 - 将 CPA Usage Queue retention 从 300 秒通过 Management API v8 热更新至上限 3,600 秒，并备份修改前配置；尚未启用 Monitor 生产 Collector。
+
+
+## 2026-11-18 — Native CPA RESP Subscription
+
+- 实现 CPA 原生 RESP `SUBSCRIBE usage` 长连接与 Pub/Sub 消息解析，支持 AUTH、订阅确认、消息帧分发、UNSUBSCRIBE、连接关闭与异步持久化错误处理。
+- Collector 默认改为 `COLLECTOR_MODE=auto`：优先加入 CPA 广播订阅；仅当服务端明确拒绝 `SUBSCRIBE` 时才切换 FIFO Pull。订阅断线不会盲目执行 LPOP。
+- 每个订阅事件先事务写入 PostgreSQL Inbox；订阅会话记录 received/persisted 计数。断线、进程异常或持久化失败会写入 `usage_ingest_gaps`，missing count 明确标为 unknown（CPA Pub/Sub 无 ACK/replay）。
+- 新增 `0008_resp_subscription.sql`，扩展 collector mode、pull attempt、Inbox 和 usage event transport 约束。
+- 增加 RESP fake-server 测试、PostgreSQL Inbox/Processor 集成测试、断线 gap 测试；44 项 Collector 测试、PostgreSQL、OMC 导入、typecheck、lint 和 Next.js build 全部通过。
+- 通过真实 Collector 进程 + 隔离 RESP fake CPA + PostgreSQL 17 完成端到端订阅验证：收到 1 条事件、Inbox 持久化 1 条、SIGTERM 后正常 UNSUBSCRIBE 并结束会话。

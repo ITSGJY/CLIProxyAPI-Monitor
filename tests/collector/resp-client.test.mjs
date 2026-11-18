@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { test } from "node:test";
-import { encodeRespCommand, parseRespFrame, pullUsageViaResp } from "../../lib/collector/resp-client.mjs";
+import { encodeRespCommand, parseRespFrame, pullUsageViaResp, subscribeUsageViaResp } from "../../lib/collector/resp-client.mjs";
 
 function readRequest(buffer) {
   const firstLineEnd = buffer.indexOf("\r\n");
@@ -162,5 +162,115 @@ test("RESP pull rejects a non-usage channel", async () => {
       count: 10
     }),
     /must use the 'usage' channel/
+  );
+});
+
+
+test("CPA RESP subscription authenticates, subscribes to usage and durably forwards Pub/Sub messages", async (t) => {
+  const observed = [];
+  let socketRef;
+  const server = createServer((socket) => {
+    socketRef = socket;
+    let buffer = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      while (true) {
+        const request = readRequest(buffer);
+        if (!request) break;
+        buffer = buffer.subarray(request.next);
+        observed.push(request.args);
+        if (request.args[0] === "AUTH") socket.write("+OK\r\n");
+        else if (request.args[0] === "SUBSCRIBE") {
+          socket.write("*3\r\n$9\r\nsubscribe\r\n$5\r\nusage\r\n:1\r\n");
+          const frames = [];
+          for (let index = 0; index < 150; index += 1) {
+            const payload = JSON.stringify({ request_id: `subscription-event-${index}`, model: "test-model" });
+            frames.push("*3\r\n$7\r\nmessage\r\n$5\r\nusage\r\n$" + Buffer.byteLength(payload) + "\r\n" + payload + "\r\n");
+          }
+          setImmediate(() => socket.write(frames.join("")));
+        } else if (request.args[0] === "UNSUBSCRIBE") {
+          socket.write("*3\r\n$11\r\nunsubscribe\r\n$5\r\nusage\r\n:0\r\n");
+        } else socket.write("-ERR unsupported command\r\n");
+      }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => { socketRef?.destroy(); server.close(resolve); }));
+  const address = server.address();
+  const controller = new AbortController();
+  const received = [];
+  let activeCallbacks = 0;
+  let maxActiveCallbacks = 0;
+  const running = subscribeUsageViaResp({
+    address: `127.0.0.1:${address.port}`,
+    password: "test-management-key",
+    signal: controller.signal,
+    onMessage: async (payload) => {
+      activeCallbacks += 1;
+      maxActiveCallbacks = Math.max(maxActiveCallbacks, activeCallbacks);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      received.push(JSON.parse(payload));
+      activeCallbacks -= 1;
+    }
+  });
+  for (let i = 0; i < 1_000 && received.length < 150; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(received.length, 150);
+  assert.equal(received[0].request_id, "subscription-event-0");
+  assert.equal(received[149].request_id, "subscription-event-149");
+  assert.equal(maxActiveCallbacks, 1);
+  controller.abort();
+  const result = await running;
+  assert.equal(result.clean, true);
+  assert.equal(result.messages, 150);
+  assert.deepEqual(observed.map((args) => args[0]), ["AUTH", "SUBSCRIBE", "UNSUBSCRIBE"]);
+  assert.deepEqual(observed[1], ["SUBSCRIBE", "usage"]);
+});
+
+test("RESP subscription marks an explicit server rejection so auto mode can safely select pull", async (t) => {
+  const server = createServer((socket) => {
+    let buffer = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      while (true) {
+        const request = readRequest(buffer);
+        if (!request) break;
+        buffer = buffer.subarray(request.next);
+        if (request.args[0] === "AUTH") socket.write("+OK\r\n");
+        else if (request.args[0] === "SUBSCRIBE") socket.write("-ERR unknown command 'SUBSCRIBE'\r\n");
+      }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  await assert.rejects(
+    subscribeUsageViaResp({ address: `127.0.0.1:${address.port}`, password: "test-key", onMessage() {} }),
+    (error) => error.respSubscribeRejected === true && error.subscriptionEstablished !== true
+  );
+});
+
+test("RESP subscription disconnect after acknowledgement is marked as an established stream", async (t) => {
+  const server = createServer((socket) => {
+    let buffer = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      while (true) {
+        const request = readRequest(buffer);
+        if (!request) break;
+        buffer = buffer.subarray(request.next);
+        if (request.args[0] === "AUTH") socket.write("+OK\r\n");
+        else if (request.args[0] === "SUBSCRIBE") {
+          socket.write("*3\r\n$9\r\nsubscribe\r\n$5\r\nusage\r\n:1\r\n");
+          setTimeout(() => socket.destroy(), 10);
+        }
+      }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const address = server.address();
+  await assert.rejects(
+    subscribeUsageViaResp({ address: `127.0.0.1:${address.port}`, password: "test-key", onMessage() {} }),
+    (error) => error.subscriptionEstablished === true
   );
 });

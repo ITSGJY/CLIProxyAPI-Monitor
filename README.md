@@ -142,7 +142,7 @@ pm2 start adapter.js --name cpa-adapter
 
 ### Phase 6 Historical OMC Import
 
-- `scripts/snapshot-omc-sqlite.py` creates a consistent read-only SQLite snapshot. `scripts/omc-sqlite-source.py` validates and exports an allowlisted source projection. `scripts/import-omc-sqlite.mjs` performs a resumable, SHA-256-bound, idempotent import into loopback PostgreSQL test databases only.
+- `scripts/snapshot-omc-sqlite.py` creates a consistent read-only SQLite snapshot. `scripts/omc-sqlite-source.py` validates and exports an allowlisted source projection. `scripts/import-omc-sqlite.mjs` performs a resumable, SHA-256-bound, idempotent import into loopback PostgreSQL test databases by default. Production import requires a separate dual opt-in and is restricted to the dedicated Monitor database.
 - Migration `0007_phase6_legacy_import.sql` adds import-run audit/progress, preserves source price-version IDs separately from target price-version foreign keys, and retains OMC's full historical price-version catalog in a separate audit table.
 - The OMC source is request-level `usage_events`; duplicate `event_key` rows are retained using source row ID identity, with the original key retained as `source_event_key`. Sensitive raw request/network fields are excluded.
 - See `docs/phase6-legacy-import.md` for source inventory, mapping, reconciliation and Phase 7 boundary.
@@ -151,6 +151,6 @@ pm2 start adapter.js --name cpa-adapter
 ### Phase 7 Deployment and Resilience
 
 - `Dockerfile` builds a Next.js standalone runtime; GitHub Actions publishes immutable `sha-*` images to GHCR. The production host pulls the pinned image and does not run Node/pnpm builds.
-- `deploy/compose/compose.yaml` runs Web, Processor and Rollup on the existing `personal-cloud-hub_default` Docker network. The CPA Collector runs in a separate opt-in Compose profile with `network_mode: host` because CPA binds its RESP/management listener to `127.0.0.1:8317`.
+- `deploy/compose/compose.yaml` runs Web, Processor and Rollup on the existing `personal-cloud-hub_default` Docker network. The CPA Collector runs in a separate opt-in Compose profile with `network_mode: host` because CPA binds its RESP/management listener to `127.0.0.1:8317`. Its default `auto` mode uses native RESP `SUBSCRIBE usage`; FIFO pull is an explicit compatibility mode.
 - The production deployment requires a dedicated PostgreSQL database/role, separate from Cloudreve. The Collector remains disabled until a coordinated single-consumer cutover.
 - See [Phase 7 runbook](docs/phase7-runbook.md) for fault recovery, queue retention, Docker deployment and cutover gates.

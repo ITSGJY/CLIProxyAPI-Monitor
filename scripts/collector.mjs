@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { getPullBackoffMs } from "../lib/collector/retry.mjs";
 import { loadCollectorConfig } from "../lib/collector/config.mjs";
-import { pullUsageViaResp } from "../lib/collector/resp-client.mjs";
+import { pullUsageViaResp, subscribeUsageViaResp } from "../lib/collector/resp-client.mjs";
 import { pullUsageViaHttp } from "../lib/collector/http-queue.mjs";
 import {
   acquireCollectorLease,
@@ -14,6 +14,9 @@ import {
   markInterruptedPullAttempts,
   markPullAttemptFailed,
   persistPulledBatch,
+  persistSubscribedUsageEvent,
+  completeSubscriptionAttempt,
+  interruptSubscriptionAttempt,
   pruneEmptyPullAttempts
 } from "../lib/collector/postgres-store.mjs";
 
@@ -46,6 +49,94 @@ async function waitForNextCycle(milliseconds, signal, refreshLease) {
       throw error;
     }
     if (Date.now() < deadline && !signal.aborted) await refreshLease();
+  }
+}
+
+async function runSubscriptionSession(pool, config, stopSignal, refreshLease) {
+  const attemptId = await createPullAttempt(pool, {
+    instanceId: config.instanceId,
+    transport: "resp-subscribe",
+    queueName: config.queueName,
+    requestedCount: 1
+  });
+  const startedAt = new Date();
+  await pool.query(
+    `UPDATE usage_pull_attempts SET metadata = metadata || $2::jsonb WHERE id = $1`,
+    [attemptId, JSON.stringify({ mode: "subscribe", channel: "usage" })]
+  );
+
+  const sessionController = new AbortController();
+  const stopHandler = () => sessionController.abort();
+  stopSignal.addEventListener("abort", stopHandler, { once: true });
+  let paused = false;
+  let controlError = null;
+  let controlBusy = false;
+
+  const controlTimer = setInterval(async () => {
+    if (controlBusy || sessionController.signal.aborted) return;
+    controlBusy = true;
+    try {
+      await heartbeatCollectorState(pool, config.instanceId, config.workerId, "receiving", config.leaseSeconds);
+      const commands = await claimCollectorCommands(pool, config.instanceId, config.workerId);
+      for (const command of commands) {
+        if (command.command === "pause") {
+          paused = true;
+          sessionController.abort();
+        }
+        if (command.command === "resume") paused = false;
+      }
+      if (commands.length > 0) {
+        await completeCollectorCommands(pool, commands, config.workerId, "completed");
+      }
+    } catch (error) {
+      controlError = error;
+      sessionController.abort();
+    } finally {
+      controlBusy = false;
+    }
+  }, Math.max(5_000, Math.min(10_000, config.pollIntervalMs)));
+
+  try {
+    const result = await subscribeUsageViaResp({
+      address: config.redisAddress,
+      password: config.managementKey,
+      channel: config.queueName,
+      timeoutMs: config.respTimeoutMs,
+      signal: sessionController.signal,
+      onSubscribed: async () => {
+        await heartbeatCollectorState(pool, config.instanceId, config.workerId, "receiving", config.leaseSeconds);
+      },
+      onMessage: async (payload) => {
+        await persistSubscribedUsageEvent(pool, {
+          attemptId,
+          instanceId: config.instanceId,
+          queueName: config.queueName,
+          item: payload
+        });
+      }
+    });
+    if (controlError) {
+      controlError.subscriptionEstablished = true;
+      throw controlError;
+    }
+    const summary = await completeSubscriptionAttempt(pool, attemptId);
+    return { paused, stopped: stopSignal.aborted, messages: result.messages, ...summary };
+  } catch (error) {
+    if (error?.subscriptionEstablished) {
+      await interruptSubscriptionAttempt(pool, {
+        attemptId,
+        instanceId: config.instanceId,
+        startedAt,
+        error,
+        reason: "resp_subscription_disconnected"
+      });
+    } else {
+      await markPullAttemptFailed(pool, attemptId, error, error?.respSubscribeRejected ? "resp_subscribe_rejected" : "resp_subscribe_connect_failed");
+    }
+    throw error;
+  } finally {
+    clearInterval(controlTimer);
+    stopSignal.removeEventListener("abort", stopHandler);
   }
 }
 
@@ -86,7 +177,8 @@ async function run() {
     await markInterruptedPullAttempts(pool, config.instanceId, 0);
     await pruneEmptyPullAttempts(pool, config.instanceId, 7);
     let lastEmptyAttemptCleanupAt = Date.now();
-    console.log(`Collector ready for instance ${config.instanceId}; mode=pull-first; queue=usage`);
+    let runtimeMode = config.mode;
+    console.log(`Collector ready for instance ${config.instanceId}; mode=${runtimeMode}; queue=usage`);
     const refreshLease = () => heartbeatCollectorState(pool, config.instanceId, config.workerId, null, config.leaseSeconds);
 
     while (!stopping) {
@@ -108,6 +200,32 @@ async function run() {
       );
       if (paused) {
         await waitForNextCycle(config.pollIntervalMs, stopController.signal, refreshLease);
+        continue;
+      }
+
+      if (runtimeMode === "auto" || runtimeMode === "subscribe") {
+        await heartbeatCollectorState(pool, config.instanceId, config.workerId, "checking", config.leaseSeconds);
+        try {
+          const summary = await runSubscriptionSession(pool, config, stopController.signal, refreshLease);
+          consecutiveFailures = 0;
+          if (summary.messages > 0) {
+            console.log(JSON.stringify({ event: "usage_subscription_session_closed", messages: summary.messages, persisted: summary.persisted_count ?? summary.persistedCount ?? summary.persisted_count }));
+          }
+          if (summary.paused) paused = true;
+          if (stopping || summary.stopped) break;
+          if (paused) continue;
+        } catch (subscribeError) {
+          if (runtimeMode === "auto" && subscribeError?.respSubscribeRejected) {
+            runtimeMode = "pull";
+            console.warn("CPA RESP SUBSCRIBE was explicitly rejected; switching to FIFO pull mode because the server did not accept a subscriber.");
+            continue;
+          }
+          if (stopping) break;
+          consecutiveFailures += 1;
+          const backoff = getPullBackoffMs(consecutiveFailures, config.pollIntervalMs);
+          console.error("CPA RESP subscription disconnected; reconnecting (a Pub/Sub gap was recorded):", safeMessage(subscribeError));
+          await waitForNextCycle(backoff, stopController.signal, refreshLease);
+        }
         continue;
       }
 

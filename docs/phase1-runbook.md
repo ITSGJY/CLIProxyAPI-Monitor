@@ -43,7 +43,7 @@ Production safety overrides, reserved for a separately approved cutover:
 Optional bounds:
 
 - `CPA_USAGE_QUEUE=usage` (any other queue is rejected)
-- `COLLECTOR_MODE=pull-first` (Subscribe is not enabled)
+- `COLLECTOR_MODE=auto` (RESP `SUBSCRIBE usage` first; FIFO pull only after an explicit server rejection)
 - `COLLECTOR_POLL_INTERVAL_MS=10000`
 - `COLLECTOR_BATCH_SIZE=100`
 - `COLLECTOR_LEASE_SECONDS=60` (minimum `max(60, 3 × poll interval in seconds)`)
@@ -58,7 +58,7 @@ Run `pnpm collector` only against an isolated CPA test instance and disposable P
 - [ ] Processor replay does not create duplicate logical events.
 - [ ] Event insert + identity ledger insert are transactionally atomic.
 - [ ] Monthly partition routing is verified.
-- [ ] RESP AUTH/LPOP and HTTP fallback pass fake-server tests.
+- [x] RESP AUTH/SUBSCRIBE Pub/Sub stream and FIFO LPOP/HTTP fallback pass fake-server tests.
 - [ ] RESP empty result does not trigger a second destructive HTTP pull.
 - [ ] A persistence failure after a successful LPOP does not invoke HTTP fallback.
 - [ ] Production OMC, Keeper, CPAMP, CPA and PostgreSQL remain unchanged.

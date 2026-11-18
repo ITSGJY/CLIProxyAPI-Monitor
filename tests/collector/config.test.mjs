@@ -29,14 +29,14 @@ test("production CPA port 8317 is blocked without an explicit cutover flag", () 
   );
 });
 
-test("Collector rejects the legacy queue name and non-pull-first mode", () => {
+test("Collector rejects the legacy queue name and unknown mode", () => {
   assert.throws(
     () => loadCollectorConfig({ ...safeEnv, CPA_USAGE_QUEUE: "queue" }),
     /only supports the 'usage' queue/
   );
   assert.throws(
-    () => loadCollectorConfig({ ...safeEnv, COLLECTOR_MODE: "subscribe" }),
-    /mode is pull-first/
+    () => loadCollectorConfig({ ...safeEnv, COLLECTOR_MODE: "invalid" }),
+    /must be one of auto, subscribe or pull/
   );
 });
 
@@ -77,6 +77,14 @@ test("explicit test endpoints are accepted without production permission", () =>
   const config = loadCollectorConfig(safeEnv);
   assert.equal(config.enabled, true);
   assert.equal(config.queueName, "usage");
+  assert.equal(config.mode, "auto");
   assert.equal(config.allowProductionTarget, false);
   assert.equal(config.redisPort, 19171);
+});
+
+
+test("Collector supports explicit RESP subscription and explicit FIFO pull modes", () => {
+  assert.equal(loadCollectorConfig({ ...safeEnv, COLLECTOR_MODE: "subscribe" }).mode, "subscribe");
+  assert.equal(loadCollectorConfig({ ...safeEnv, COLLECTOR_MODE: "pull" }).mode, "pull");
+  assert.equal(loadCollectorConfig({ ...safeEnv, COLLECTOR_MODE: "pull-first" }).mode, "pull");
 });
