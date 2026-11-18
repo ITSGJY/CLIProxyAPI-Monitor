@@ -11,7 +11,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
     parser.add_argument("--destination", required=True)
-    parser.add_argument("--created-before-ms", type=int, help="Exclude events recorded by OMC after this Unix millisecond cutoff")
+    parser.add_argument("--event-before-ms", type=int, help="Exclude CPA events whose original event timestamp is after the subscription boundary")
     args = parser.parse_args()
     source = Path(args.source).resolve(strict=True)
     destination = Path(args.destination).resolve()
@@ -25,13 +25,14 @@ def main():
         try:
             src.execute("PRAGMA query_only = ON")
             src.backup(dst, pages=512, sleep=0.05)
-            if args.created_before_ms is not None:
-                if args.created_before_ms <= 0:
-                    raise ValueError("--created-before-ms must be a positive Unix millisecond timestamp")
+            if args.event_before_ms is not None:
+                if args.event_before_ms <= 0:
+                    raise ValueError("--event-before-ms must be a positive Unix millisecond timestamp")
                 columns = {row[1] for row in dst.execute("PRAGMA table_info(usage_events)")}
-                time_column = "created_at_ms" if "created_at_ms" in columns else "timestamp_ms"
+                if "timestamp_ms" not in columns:
+                    raise ValueError("usage_events is missing its original timestamp_ms event-time column")
                 dst.execute("BEGIN IMMEDIATE")
-                dst.execute(f"DELETE FROM usage_events WHERE COALESCE({time_column}, timestamp_ms) > ?", (args.created_before_ms,))
+                dst.execute("DELETE FROM usage_events WHERE timestamp_ms > ?", (args.event_before_ms,))
                 dst.commit()
                 dst.execute("VACUUM")
             result = dst.execute("PRAGMA quick_check").fetchone()[0]
@@ -43,8 +44,8 @@ def main():
             src.close()
         os.chmod(temporary, 0o600)
         os.replace(temporary, destination)
-        cutoff = "none" if args.created_before_ms is None else str(args.created_before_ms)
-        print("snapshot_ok rows=" + str(count) + " bytes=" + str(destination.stat().st_size) + " created_before_ms=" + cutoff)
+        cutoff = "none" if args.event_before_ms is None else str(args.event_before_ms)
+        print("snapshot_ok rows=" + str(count) + " bytes=" + str(destination.stat().st_size) + " event_before_ms=" + cutoff)
     except Exception:
         try:
             os.unlink(temporary)

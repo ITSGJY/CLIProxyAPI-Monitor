@@ -5,42 +5,44 @@ readonly PG_CONTAINER="personal-cloud-hub-postgres-1"
 readonly IMAGE_REPOSITORY="ghcr.io/itsgjy/cliproxyapi-monitor"
 fail() { echo "deployment_error: $*" >&2; exit 1; }
 [[ $# -eq 1 ]] || fail "expected one SSH command argument"
-[[ "$1" =~ ^deploy[[:space:]](sha-[0-9a-f]{7,40})$ ]] || fail "only 'deploy sha-<commit>' is accepted"
-readonly IMAGE_TAG="\${BASH_REMATCH[1]}"
-readonly NEW_IMAGE="\${IMAGE_REPOSITORY}:\${IMAGE_TAG}"
+[[ "$1" =~ ^deploy[[:space:]](sha-[0-9a-f]{7,40})$ ]] || fail "only deploy sha-<commit> is accepted"
+readonly IMAGE_TAG="${BASH_REMATCH[1]}"
+readonly NEW_IMAGE="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
 cd "$DEPLOY_DIR"
 [[ -f .env && -f compose.yaml ]] || fail "deployment configuration is missing"
 set -a
 source ./.env
 set +a
-[[ "\${MONITOR_IMAGE:-}" == "\${IMAGE_REPOSITORY}:"* ]] || fail "MONITOR_IMAGE repository mismatch"
-[[ -n "\${MONITOR_DATABASE_URL:-}" ]] || fail "MONITOR_DATABASE_URL is missing"
+[[ "${MONITOR_IMAGE:-}" == "${IMAGE_REPOSITORY}:"* ]] || fail "MONITOR_IMAGE repository mismatch"
+[[ -n "${MONITOR_DATABASE_URL:-}" ]] || fail "MONITOR_DATABASE_URL is missing"
+install -d -m 700 /var/backups/cliproxyapi-monitor
 available_kb="$(df -Pk /var/backups/cliproxyapi-monitor | awk 'NR==2 {print $4}')"
 (( available_kb > 1048576 )) || fail "less than 1 GiB free for a database backup"
 db_password="$(python3 -c 'import sys,urllib.parse; u=urllib.parse.urlparse(sys.argv[1]); print(urllib.parse.unquote(u.password or ""))' "$MONITOR_DATABASE_URL")"
 [[ -n "$db_password" ]] || fail "could not parse database password"
 restore_db="monitor_restore_$(date -u +%Y%m%d%H%M%S)_$RANDOM"
-backup_file="/var/backups/cliproxyapi-monitor/predeploy-\${IMAGE_TAG}-$(date -u +%Y%m%dT%H%M%SZ).dump"
-mkdir -p /var/backups/cliproxyapi-monitor
-chmod 700 /var/backups/cliproxyapi-monitor
-echo "deployment_image=\${NEW_IMAGE}"
+backup_file="/var/backups/cliproxyapi-monitor/predeploy-${IMAGE_TAG}-$(date -u +%Y%m%dT%H%M%SZ).dump"
+echo "deployment_image=${NEW_IMAGE}"
 echo "backup_start=true"
-docker exec -e "PGPASSWORD=\${db_password}" "$PG_CONTAINER" pg_dump -U cliproxyapi_monitor -d cliproxyapi_monitor -Fc -Z 6 > "$backup_file"
+docker exec -e "PGPASSWORD=${db_password}" "$PG_CONTAINER" pg_dump -U cliproxyapi_monitor -d cliproxyapi_monitor -Fc -Z 6 > "$backup_file"
 chmod 600 "$backup_file"
 test -s "$backup_file" || fail "database backup is empty"
-docker exec -i -e "PGPASSWORD=\${db_password}" "$PG_CONTAINER" pg_restore --list < "$backup_file" >/dev/null
+docker exec -i -e "PGPASSWORD=${db_password}" "$PG_CONTAINER" pg_restore --list < "$backup_file" >/dev/null
 echo "backup_restore_test_start=true"
 docker exec "$PG_CONTAINER" sh -lc 'createdb -U "$POSTGRES_USER" -O cliproxyapi_monitor "$1"' _ "$restore_db"
 restore_cleanup() {
   docker exec "$PG_CONTAINER" sh -lc 'dropdb -U "$POSTGRES_USER" --if-exists "$1"' _ "$restore_db" >/dev/null 2>&1 || true
 }
 trap restore_cleanup EXIT
-docker exec -i -e "PGPASSWORD=\${db_password}" "$PG_CONTAINER" pg_restore -U cliproxyapi_monitor -d "$restore_db" --exit-on-error --no-owner --no-privileges < "$backup_file"
-restored_tables="$(docker exec -e "PGPASSWORD=\${db_password}" "$PG_CONTAINER" psql -U cliproxyapi_monitor -d "$restore_db" -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")"
-echo "backup_restore_test=passed restored_public_tables=\${restored_tables}"
+docker exec -i -e "PGPASSWORD=${db_password}" "$PG_CONTAINER" pg_restore -U cliproxyapi_monitor -d "$restore_db" --exit-on-error --no-owner --no-privileges < "$backup_file"
+restored_tables="$(docker exec -e "PGPASSWORD=${db_password}" "$PG_CONTAINER" psql -U cliproxyapi_monitor -d "$restore_db" -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")"
+echo "backup_restore_test=passed restored_public_tables=${restored_tables}"
 restore_cleanup
 trap - EXIT
 old_image="$MONITOR_IMAGE"
+web_was_running="$(docker inspect --format '{{.State.Running}}' cliproxyapi-monitor-web 2>/dev/null || echo false)"
+processor_was_running="$(docker inspect --format '{{.State.Running}}' cliproxyapi-monitor-processor 2>/dev/null || echo false)"
+rollup_was_running="$(docker inspect --format '{{.State.Running}}' cliproxyapi-monitor-rollup 2>/dev/null || echo false)"
 python3 - "$DEPLOY_DIR/.env" "$NEW_IMAGE" <<'PY'
 import os, sys, tempfile
 path, image = sys.argv[1:]
@@ -63,7 +65,7 @@ finally:
         os.unlink(temporary)
 PY
 rollback_application() {
-  echo "deployment_health_failed=true; restoring_previous_image=\${old_image}" >&2
+  echo "deployment_failed=true; restoring_previous_image=${old_image}" >&2
   python3 - "$DEPLOY_DIR/.env" "$old_image" <<'PY'
 import os, sys, tempfile
 path, image = sys.argv[1:]
@@ -85,8 +87,13 @@ finally:
     if os.path.exists(temporary):
         os.unlink(temporary)
 PY
-  docker compose --env-file .env -f compose.yaml pull web processor rollup || true
-  docker compose --env-file .env -f compose.yaml up -d web processor rollup || true
+  services=()
+  if [[ "$web_was_running" == "true" ]]; then services+=(web); fi
+  if [[ "$processor_was_running" == "true" ]]; then services+=(processor); fi
+  if [[ "$rollup_was_running" == "true" ]]; then services+=(rollup); fi
+  if (( ${#services[@]} > 0 )); then
+    docker compose --env-file .env -f compose.yaml up -d "${services[@]}" || true
+  fi
 }
 echo "image_pull_start=true"
 if ! docker compose --env-file .env -f compose.yaml pull web processor rollup; then
@@ -119,6 +126,6 @@ if [[ "$healthy" != true ]]; then
 fi
 find /var/backups/cliproxyapi-monitor -type f -name 'predeploy-*.dump' -mtime +14 -delete
 echo "deployment_result=success"
-echo "deployed_image=\${NEW_IMAGE}"
-echo "database_backup=\${backup_file}"
+echo "deployed_image=${NEW_IMAGE}"
+echo "database_backup=${backup_file}"
 docker compose --env-file .env -f compose.yaml ps

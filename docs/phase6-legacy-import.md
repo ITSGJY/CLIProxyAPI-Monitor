@@ -22,6 +22,17 @@
 - Deterministic identity: SHA-256 of `legacy-oh-my-cpa-v1`, source key and immutable source row ID. The original `event_key` is retained separately as `source_event_key` for provenance and duplicate analysis. Duplicate source `event_key` values do not collapse distinct source rows.
 - The importer is restartable by source ID, batched transactionally, source-SHA256 bound, serialized with a PostgreSQL advisory lock, and replay-safe. By default it only accepts loopback PostgreSQL test databases. Production import is an explicit Phase 7 operation requiring both `--allow-production-target` and `PHASE6_IMPORT_ALLOW_PRODUCTION_TARGET=true`, and it only accepts the dedicated `cliproxyapi_monitor` role/database on Docker host `postgres`. It verifies the source file hash again before finalizing a run. A completed source snapshot is a no-op on re-run.
 - A run ledger records source checksum, schema version, manifest, progress, inserted/skipped counts, and completion/failure state.
+## Live Subscription handover boundary
+
+Use the server-acknowledged CPA `SUBSCRIBE` time as the boundary between historical OMC data and live Monitor ingestion.
+
+- Read `metadata.subscribed_at` from the latest `usage_pull_attempts` row for `instance_id='oracle-primary'` and `transport='resp-subscribe'`.
+- Convert that timestamp to Unix milliseconds with PostgreSQL: `round(extract(epoch FROM (metadata->>'subscribed_at')::timestamptz) * 1000)::bigint`.
+- Create the OMC snapshot with `scripts/snapshot-omc-sqlite.py --event-before-ms <subscribed_at_unix_ms>`.
+- The snapshot filters on the original CPA `usage_events.timestamp_ms`, not OMC `created_at_ms`. `created_at_ms` is the time OMC inserted the row and can lag the original event timestamp; using it would incorrectly omit pre-subscription events that OMC persisted later.
+- The live OMC SQLite database is opened read-only. The snapshot copy is filtered and imported; no live OMC row is deleted or rewritten.
+- Keep Monitor in native `SUBSCRIBE` mode throughout snapshot creation and import. Do not switch it to FIFO `LPOP`.
+
 
 ## Privacy boundary
 
