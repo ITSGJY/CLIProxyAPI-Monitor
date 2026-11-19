@@ -79,7 +79,13 @@ jobs:
       - name: Build Next.js application
         run: pnpm build-only
       - name: Install Chromium for browser acceptance
-        run: pnpm exec playwright install --with-deps chromium
+        run: |
+          printf '%s\n' \
+            'Acquire::Retries "5";' \
+            'Acquire::http::Timeout "30";' \
+            'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80-github-actions-retries >/dev/null
+          pnpm exec playwright install --with-deps chromium
       - name: Apply migrations to disposable CI database
         env:
           DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
@@ -127,19 +133,35 @@ jobs:
             -p 127.0.0.1:55439:5432 \
             --mount type=volume,src=phase7-postgres-restart-data,dst=/var/lib/postgresql/data \
             postgres:17
-          for attempt in $(seq 1 45); do
-            if docker exec phase7-postgres-restart pg_isready -U phase7 -d phase7_restart_test >/dev/null 2>&1; then break; fi
+          ready=0
+          for attempt in $(seq 1 60); do
+            if docker exec phase7-postgres-restart psql -U phase7 -d phase7_restart_test -Atqc "SELECT 1" >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
             sleep 1
           done
+          if [ "$ready" -ne 1 ]; then
+            docker logs phase7-postgres-restart
+            exit 1
+          fi
           docker exec phase7-postgres-restart psql -U phase7 -d phase7_restart_test -v ON_ERROR_STOP=1 -c \
             "CREATE TABLE restart_probe (id integer PRIMARY KEY, payload text NOT NULL); INSERT INTO restart_probe VALUES (1, 'durable');"
       - name: Restart PostgreSQL and verify committed data
         run: |
           docker restart phase7-postgres-restart
-          for attempt in $(seq 1 45); do
-            if docker exec phase7-postgres-restart pg_isready -U phase7 -d phase7_restart_test >/dev/null 2>&1; then break; fi
+          ready=0
+          for attempt in $(seq 1 60); do
+            if docker exec phase7-postgres-restart psql -U phase7 -d phase7_restart_test -Atqc "SELECT 1" >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
             sleep 1
           done
+          if [ "$ready" -ne 1 ]; then
+            docker logs phase7-postgres-restart
+            exit 1
+          fi
           value=$(docker exec phase7-postgres-restart psql -U phase7 -d phase7_restart_test -Atc \
             "SELECT payload FROM restart_probe WHERE id=1")
           test "$value" = "durable"
