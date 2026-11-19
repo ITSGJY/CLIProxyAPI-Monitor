@@ -227,9 +227,17 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
        VALUES ('gpt-test', 1, 0.5, 2)`
     );
     const initialPrice = await scopedPool.query(
-      "SELECT price_version_id FROM model_prices WHERE model = 'gpt-test'"
+      "SELECT price_version_id FROM model_prices WHERE model = 'gpt-test' AND provider = '' AND service_tier = ''"
     );
     assert.ok(initialPrice.rows[0].price_version_id, "model price insert must create a version");
+    await scopedPool.query(
+      `INSERT INTO model_prices (model, provider, service_tier, input_price_per_1m, cached_input_price_per_1m, output_price_per_1m)
+       VALUES ('gpt-test', 'anthropic', '', 3, 1, 6)`
+    );
+    const providerPriceScopes = await scopedPool.query(
+      "SELECT count(*)::int AS scopes FROM model_prices WHERE model = 'gpt-test'"
+    );
+    assert.equal(providerPriceScopes.rows[0].scopes, 2, "same CPA model must allow both shared and provider-specific prices");
     await scopedPool.query(
       "INSERT INTO pricing_channels (channel, multiplier, note) VALUES ('openai', 2, 'PostgreSQL pricing integration test')"
     );
@@ -432,7 +440,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
 
     await scopedPool.query("DELETE FROM model_prices WHERE model = 'gpt-test'");
     const deletedPriceHistory = await scopedPool.query(
-      "SELECT available FROM model_price_versions WHERE model = 'gpt-test' ORDER BY valid_from DESC, id DESC LIMIT 1"
+      "SELECT available FROM model_price_versions WHERE model = 'gpt-test' AND provider IS NULL ORDER BY valid_from DESC, id DESC LIMIT 1"
     );
     assert.equal(deletedPriceHistory.rows[0].available, false, "deleting a price must append an unavailable version");
 
