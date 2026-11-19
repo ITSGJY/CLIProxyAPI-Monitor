@@ -187,13 +187,13 @@ function getTokenSegments(record: RecordDetails): { segments: TokenSegment[]; un
     }
   }
 
-  const segments: TokenSegment[] = [
+  const allSegments: TokenSegment[] = [
     { key: "cache_read", label: "缓存读取", value: cacheRead, color: "bg-cyan-400" },
     { key: "input", label: "普通输入", value: freshInput, color: "bg-indigo-400" },
     { key: "reasoning", label: "推理", value: placedReasoning, color: "bg-amber-400" },
     { key: "output", label: "普通输出", value: textOutput, color: "bg-emerald-400" }
-  ].filter((segment) => segment.value > 0);
-
+  ];
+  const segments = allSegments.filter((segment) => segment.value > 0);
   return { segments, unplacedReasoning };
 }
 
