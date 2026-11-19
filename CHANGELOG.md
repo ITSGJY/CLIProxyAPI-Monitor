@@ -1,4 +1,8 @@
 # CHANGELOG
+## 2026-11-19
+
+- 完成 `/records` 请求事件分析工作台改造：支持自定义列、详情抽屉、高级筛选和 CSV/JSON 导出；新增 CPA 请求上下文专用字段及 PostgreSQL 迁移。
+- 修复迁移预检误将其他 schema 中的 `model_prices` 当作当前目标 schema 已迁移的问题，并增加 PostgreSQL 回归断言。
 
 ## 2026-11-17
 

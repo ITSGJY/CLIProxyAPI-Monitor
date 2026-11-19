@@ -56,18 +56,23 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
         "0005_usage_pipeline.sql",
         "0006_phase5_dashboard_rollup_dimensions.sql",
         "0007_phase6_legacy_import.sql",
-        "0008_resp_subscription.sql"
+        "0008_resp_subscription.sql",
+        "0009_request_event_context.sql"
       ];
       for (const migration of migrations) {
         const sql = await readFile(new URL("../drizzle/" + migration, import.meta.url), "utf8");
         await client.query(sql);
       }
 
+      const targetSchemaModelPrices = await client.query("SELECT to_regclass('model_prices') IS NOT NULL AS exists");
+      const unrelatedSchemaModelPrices = await adminPool.query("SELECT to_regclass('model_prices') IS NOT NULL AS exists");
+      assert.equal(targetSchemaModelPrices.rows[0].exists, true, "legacy detection should see model_prices in the target search_path");
+      assert.equal(unrelatedSchemaModelPrices.rows[0].exists, false, "legacy detection must ignore model_prices in an unrelated schema");
+
       const relation = await client.query(
         "SELECT c.relkind FROM pg_class c WHERE c.oid = to_regclass('usage_events')"
       );
       assert.equal(relation.rows[0]?.relkind, "p", "usage_events must be partitioned");
-
       const priceColumn = await client.query(
         "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'model_prices' AND column_name = 'price_version_id'"
       );
@@ -661,6 +666,13 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     const subscriptionRecord = {
       ...record,
       request_id: "phase7-resp-subscription-event",
+      session_id: "session-resp-123",
+      parent_session_id: "session-parent-resp-123",
+      execution_id: "execution-resp-123",
+      trace_id: "trace-resp-123",
+      node_kind: "message",
+      is_fork: true,
+      is_compaction: false,
       timestamp: new Date().toISOString()
     };
     await persistSubscribedUsageEvent(scopedPool, {
@@ -694,6 +706,19 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
       "SELECT count(*)::int AS count FROM usage_events WHERE request_id='phase7-resp-subscription-event'"
     );
     assert.equal(subscriptionEvent.rows[0].count, 1);
+    const subscriptionContext = await scopedPool.query(
+      "SELECT session_id, parent_session_id, execution_id, trace_id, node_kind, is_fork, is_compaction FROM usage_events WHERE request_id=$1",
+      ["phase7-resp-subscription-event"]
+    );
+    assert.deepEqual(subscriptionContext.rows[0], {
+      session_id: "session-resp-123",
+      parent_session_id: "session-parent-resp-123",
+      execution_id: "execution-resp-123",
+      trace_id: "trace-resp-123",
+      node_kind: "message",
+      is_fork: true,
+      is_compaction: false
+    });
     const subscriptionSummary = await completeSubscriptionAttempt(scopedPool, subscriptionAttempt);
     assert.equal(Number(subscriptionSummary.received_count), 1);
 
@@ -717,10 +742,12 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
 
     // Terminate one PostgreSQL backend; the pool must reconnect on the next query.
     const doomedClient = await scopedPool.connect();
+    const backendErrorPromise = new Promise((resolve) => doomedClient.once("error", resolve));
     const backend = await doomedClient.query("SELECT pg_backend_pid() AS pid");
-    await adminPool.query("SELECT pg_terminate_backend($1)", [backend.rows[0].pid]);
-    await assert.rejects(doomedClient.query("SELECT 1"));
-    doomedClient.release(true);
+    const termination = await adminPool.query("SELECT pg_terminate_backend($1)", [backend.rows[0].pid]);
+    assert.equal(termination.rows[0].pg_terminate_backend, true);
+    const backendError = await backendErrorPromise;
+    assert.equal(backendError.code, "57P01", "the terminated backend error should be observed by the borrowed client");    doomedClient.release(true);
     const recoveredConnection = await scopedPool.query("SELECT 1 AS recovered");
     assert.equal(recoveredConnection.rows[0].recovered, 1);
 

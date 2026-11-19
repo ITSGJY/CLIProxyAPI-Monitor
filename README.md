@@ -13,7 +13,7 @@
 
 - **Overview**：请求量、失败率、Token、缓存、延迟、API 等价成本、成本覆盖率及排行。
 - **Explore**：请求级 Token、模型 / Provider / Credential / Service Tier 分布、缓存趋势、Latency 和 TTFT。
-- **Records**：完整请求记录、筛选、排序、稳定游标分页及计费状态。
+- **Records**：请求事件分析工作台，支持自定义列、请求详情与诊断、组合筛选、多字段排序、稳定游标分页及 CSV/JSON 导出。
 - **Collector**：CPA v8 原生 RESP Subscription、连接恢复、事件审计、Gap Tracking 和 PostgreSQL Durable Inbox。
 - **Processor / Rollup**：幂等事件归一化、版本化价格、历史成本快照、小时及每日聚合。
 - **Historical import**：可审计的 OMC SQLite 历史记录导入，不修改 OMC 原始数据库。
@@ -150,6 +150,13 @@ pm2 start adapter.js --name cpa-adapter
 ### Phase 7 Deployment and Resilience
 
 - `Dockerfile` builds a Next.js standalone runtime; GitHub Actions publishes immutable `sha-*` images to GHCR. The production host pulls the pinned image and does not run Node/pnpm builds.
-- `deploy/compose/compose.yaml` runs Web, Processor and Rollup on the existing `personal-cloud-hub_default` Docker network. The CPA Collector runs in a separate opt-in Compose profile with `network_mode: host` because CPA binds its RESP/management listener to `127.0.0.1:8317`. Its default `auto` mode uses native RESP `SUBSCRIBE usage`; FIFO pull is an explicit compatibility mode.
-- The production deployment requires a dedicated PostgreSQL database/role, separate from Cloudreve. The Collector remains disabled until a coordinated single-consumer cutover.
+- `deploy/compose/compose.yaml` runs Web, Processor and Rollup on the existing `personal-cloud-hub_default` Docker network. The CPA Collector runs in a separate opt-in Compose profile with `network_mode: host` because CPA binds its RESP/management listener to `127.0.0.1:8317`.
+- Production Collector uses native RESP `SUBSCRIBE usage`; FIFO pull remains disabled while OMC and Keeper are active subscribers.
+- The application uses a dedicated PostgreSQL database/role, separate from Cloudreve. The deployment helper backs up and verifies the database before applying migrations.
 - See [Phase 7 runbook](docs/phase7-runbook.md) for fault recovery, queue retention, Docker deployment and cutover gates.
+
+### Phase 8 Request Event Analysis Workbench
+
+- `/records` adds persistent configurable columns, request-detail diagnostics, advanced SQL-backed filters and CSV/JSON export. Full diagnostic payloads are fetched on demand by event ID rather than included in every list response.
+- Migration `0009_request_event_context.sql` adds Session / Parent Session / Execution / Trace / Node Kind / Fork / Compaction fields to the canonical PostgreSQL event store. These fields can be shown, sorted and searched; older sanitized `raw_payload` values remain available as a read fallback.
+- See `docs/phase8-records-analysis.md` for the request-event UI, API, schema and data-safety contract.

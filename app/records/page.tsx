@@ -10,7 +10,8 @@ import {
   type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent
 } from "react";
-import { ArrowDown, ArrowUp, RefreshCw, SlidersHorizontal, X, CalendarRange, Columns3, GripVertical } from "lucide-react";
+import { ArrowDown, ArrowUp, RefreshCw, SlidersHorizontal, X, CalendarRange, Columns3, GripVertical, Download, FileJson, Search } from "lucide-react";
+import RecordDetailsDrawer from "@/app/components/RecordDetailsDrawer";
 import { formatNumberWithCommas } from "@/lib/utils";
 import { DayPicker, type DateRange } from "react-day-picker";
 import "react-day-picker/dist/style.css";
@@ -23,58 +24,68 @@ type UsageRecord = {
   source: string;
   credentialName: string;
   provider: string | null;
+  apiGroupLabel: string | null;
+  endpoint: string | null;
+  requestId: string | null;
+  sessionId: string | null;
+  parentSessionId: string | null;
+  executionId: string | null;
+  traceId: string | null;
+  nodeKind: string | null;
+  isFork: boolean | null;
+  isCompaction: boolean | null;
+  authType: string | null;
+  stream: boolean | null;
+  generate: boolean | null;
   model: string;
+  modelAlias: string | null;
+  responseModel: string | null;
+  modelSubstituted: boolean | null;
+  reasoningEffort: string | null;
+  executorType: string | null;
+  accessProvider: string | null;
+  isNativeKey: boolean | null;
   totalTokens: number;
   inputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   cachedTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  latencyMs: number | null;
+  ttftMs: number | null;
+  serviceTier: string | null;
+  statusCode: number | null;
+  failCode: string | null;
   isError: boolean;
   cost: number | null;
   costNanos: number | null;
   costCurrency: string;
   pricingStatus: string;
-  cacheCreationTokens: number;
-  latencyMs: number | null;
-  ttftMs: number | null;
-  serviceTier: string | null;
-  endpoint: string | null;
 };
 
 type RecordsResponse = {
   items: UsageRecord[];
   nextCursor: string | null;
-  filters?: { models: string[]; routes: string[]; sources: string[] };
+  filters?: { models: string[]; routes: string[]; sources: string[]; providers?: string[]; serviceTiers?: string[] };
 };
 
 type SortField =
-  | "occurredAt"
-  | "model"
-  | "route"
-  | "source"
-  | "totalTokens"
-  | "inputTokens"
-  | "outputTokens"
-  | "reasoningTokens"
-  | "cachedTokens"
-  | "cost"
-  | "isError";
+  | "occurredAt" | "model" | "route" | "source" | "provider" | "requestId"
+  | "totalTokens" | "inputTokens" | "outputTokens" | "reasoningTokens" | "cachedTokens"
+  | "cacheReadTokens" | "cacheCreationTokens" | "latencyMs" | "ttftMs" | "cost" | "isError"
+  | "sessionId" | "parentSessionId" | "executionId" | "traceId" | "nodeKind" | "isFork" | "isCompaction";
 type SortOrder = "asc" | "desc";
 type SortKey = { field: SortField; order: SortOrder };
 
 type ColumnKey =
-  | "occurredAt"
-  | "model"
-  | "route"
-  | "credentialName"
-  | "provider"
-  | "totalTokens"
-  | "inputTokens"
-  | "outputTokens"
-  | "reasoningTokens"
-  | "cachedTokens"
-  | "cost"
-  | "isError";
+  | "occurredAt" | "isError" | "provider" | "model" | "modelAlias" | "responseModel"
+  | "requestId" | "route" | "credentialName" | "apiGroupLabel" | "endpoint" | "authType"
+  | "executorType" | "accessProvider" | "isNativeKey" | "reasoningEffort" | "serviceTier"
+  | "stream" | "generate" | "modelSubstituted" | "totalTokens" | "inputTokens"
+  | "outputTokens" | "reasoningTokens" | "cachedTokens" | "cacheReadTokens"
+  | "cacheCreationTokens" | "latencyMs" | "ttftMs" | "statusCode" | "cost"
+  | "sessionId" | "parentSessionId" | "executionId" | "traceId" | "nodeKind" | "isFork" | "isCompaction";
 
 type ColumnSetting = {
   key: ColumnKey;
@@ -82,68 +93,130 @@ type ColumnSetting = {
   width: number | null;
 };
 
+type AdvancedFilters = {
+  q: string;
+  requestId: string;
+  apiGroupLabel: string;
+  endpoint: string;
+  authType: string;
+  executorType: string;
+  reasoningEffort: string;
+  modelAlias: string;
+  responseModel: string;
+  statusCode: string;
+  latencyMin: string;
+  latencyMax: string;
+  tokensMin: string;
+  tokensMax: string;
+  costStatus: string;
+};
+
+const EMPTY_ADVANCED_FILTERS: AdvancedFilters = {
+  q: "",
+  requestId: "",
+  apiGroupLabel: "",
+  endpoint: "",
+  authType: "",
+  executorType: "",
+  reasoningEffort: "",
+  modelAlias: "",
+  responseModel: "",
+  statusCode: "",
+  latencyMin: "",
+  latencyMax: "",
+  tokensMin: "",
+  tokensMax: "",
+  costStatus: ""
+};
+
 const PAGE_SIZE = 60;
-const COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v2";
+const COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v3";
+const LEGACY_COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v2";
 const DEFAULT_COLUMN_ORDER: ColumnKey[] = [
-  "occurredAt",
-  "model",
-  "route",
-  "credentialName",
-  "provider",
-  "totalTokens",
-  "inputTokens",
-  "outputTokens",
-  "reasoningTokens",
-  "cachedTokens",
-  "cost",
-  "isError"
+  "occurredAt", "isError", "provider", "model", "requestId", "sessionId", "parentSessionId", "executionId", "traceId",
+  "nodeKind", "isFork", "isCompaction", "route", "credentialName", "totalTokens", "inputTokens", "outputTokens", "reasoningTokens", "cacheReadTokens",  "cacheCreationTokens", "latencyMs", "ttftMs", "cost", "modelAlias", "responseModel",
+  "apiGroupLabel", "endpoint", "authType", "executorType", "accessProvider", "isNativeKey",
+  "reasoningEffort", "serviceTier", "stream", "generate", "modelSubstituted",
+  "cachedTokens", "statusCode"
 ];
+const DEFAULT_VISIBLE_COLUMNS = new Set<ColumnKey>([
+  "occurredAt", "isError", "provider", "model", "requestId", "route", "credentialName",
+  "totalTokens", "inputTokens", "outputTokens", "reasoningTokens", "cacheReadTokens",
+  "cacheCreationTokens", "latencyMs", "ttftMs", "cost"
+]);
 
 const COLUMN_LABELS: Record<ColumnKey, string> = {
   occurredAt: "时间",
-  model: "模型",
-  route: "密钥",
-  credentialName: "凭证",
+  isError: "状态",
   provider: "提供商",
-  totalTokens: "Tokens",
+  model: "模型",
+  modelAlias: "模型别名",
+  responseModel: "响应模型",
+  requestId: "Request ID",
+  route: "API Key",
+  credentialName: "凭证",
+  apiGroupLabel: "API Group",
+  endpoint: "Endpoint",
+  authType: "Auth Type",
+  executorType: "Executor",
+  accessProvider: "Access Provider",
+  isNativeKey: "Native Key",
+  reasoningEffort: "Reasoning Effort",
+  serviceTier: "Service Tier",
+  stream: "Stream",
+  generate: "Generate",
+  modelSubstituted: "模型替换",
+  totalTokens: "总 Tokens",
   inputTokens: "输入",
   outputTokens: "输出",
   reasoningTokens: "思考",
-  cachedTokens: "缓存",
-  cost: "费用",
-  isError: "状态"
+  cachedTokens: "Cached",
+  cacheReadTokens: "Cache Read",
+  cacheCreationTokens: "Cache Write",
+  latencyMs: "Latency",
+  ttftMs: "TTFT",
+  statusCode: "HTTP 状态码",  cost: "费用",
+  sessionId: "Session ID",
+  parentSessionId: "Parent Session ID",
+  executionId: "Execution ID",
+  traceId: "Trace ID",
+  nodeKind: "Node Kind",
+  isFork: "Fork",
+  isCompaction: "Compaction"
 };
 
 const DEFAULT_COLUMN_WIDTHS: Record<ColumnKey, number> = {
-  occurredAt: 140,
-  model: 210,
-  route: 180,
-  credentialName: 180,
-  provider: 130,
-  totalTokens: 115,
-  inputTokens: 95,
-  outputTokens: 95,
-  reasoningTokens: 95,
-  cachedTokens: 95,
-  cost: 110,
-  isError: 90
+  occurredAt: 155, isError: 88, provider: 130, model: 210, modelAlias: 160,
+  responseModel: 180, requestId: 220, route: 170, credentialName: 180,
+  apiGroupLabel: 140, endpoint: 210, authType: 120, executorType: 130,
+  accessProvider: 140, isNativeKey: 105, reasoningEffort: 130, serviceTier: 130,
+  stream: 90, generate: 95, modelSubstituted: 105, totalTokens: 115,
+  inputTokens: 95, outputTokens: 95, reasoningTokens: 105, cachedTokens: 100,
+  cacheReadTokens: 110, cacheCreationTokens: 115, latencyMs: 105, ttftMs: 95,
+  statusCode: 110, cost: 120,
+  sessionId: 190, parentSessionId: 190, executionId: 190, traceId: 190,
+  nodeKind: 120, isFork: 90, isCompaction: 110
 };
 
-const FIXED_WIDTH_COLUMNS = new Set<ColumnKey>(["model", "route", "credentialName"]);
+const FIXED_WIDTH_COLUMNS = new Set<ColumnKey>([
+  "model", "modelAlias", "responseModel", "requestId", "route", "credentialName",
+  "apiGroupLabel", "endpoint", "sessionId", "parentSessionId", "executionId", "traceId"
+]);
 
 const COLUMN_MIN_WIDTH = 80;
 const COLUMN_MAX_WIDTH = 420;
 
-const NON_FIXED_CONTENT_MIN_WIDTHS: Record<Exclude<ColumnKey, "model" | "route" | "credentialName">, number> = {
-  occurredAt: 150,
-  provider: 120,
-  totalTokens: 105,
-  inputTokens: 96,
-  outputTokens: 96,
-  reasoningTokens: 96,
-  cachedTokens: 96,
-  cost: 105,
-  isError: 88
+const NON_FIXED_CONTENT_MIN_WIDTHS: Record<ColumnKey, number> = {
+  occurredAt: 150, isError: 88, provider: 120, model: 180, modelAlias: 130,
+  responseModel: 150, requestId: 180, route: 150, credentialName: 150,
+  apiGroupLabel: 120, endpoint: 150, authType: 100, executorType: 110,
+  accessProvider: 120, isNativeKey: 95, reasoningEffort: 110, serviceTier: 110,
+  stream: 80, generate: 85, modelSubstituted: 95, totalTokens: 105,
+  inputTokens: 96, outputTokens: 96, reasoningTokens: 96, cachedTokens: 90,
+  cacheReadTokens: 100, cacheCreationTokens: 105, latencyMs: 95, ttftMs: 90,
+  statusCode: 95, cost: 105,
+  sessionId: 170, parentSessionId: 170, executionId: 170, traceId: 170,
+  nodeKind: 110, isFork: 80, isCompaction: 95
 };
 
 const SORT_FIELD_BY_COLUMN: Partial<Record<ColumnKey, SortField>> = {
@@ -151,20 +224,33 @@ const SORT_FIELD_BY_COLUMN: Partial<Record<ColumnKey, SortField>> = {
   model: "model",
   route: "route",
   credentialName: "source",
+  provider: "provider",
+  requestId: "requestId",
   totalTokens: "totalTokens",
   inputTokens: "inputTokens",
   outputTokens: "outputTokens",
   reasoningTokens: "reasoningTokens",
   cachedTokens: "cachedTokens",
+  cacheReadTokens: "cacheReadTokens",
+  cacheCreationTokens: "cacheCreationTokens",
+  latencyMs: "latencyMs",
+  ttftMs: "ttftMs",
   cost: "cost",
-  isError: "isError"
+  isError: "isError",
+  sessionId: "sessionId",
+  parentSessionId: "parentSessionId",
+  executionId: "executionId",
+  traceId: "traceId",
+  nodeKind: "nodeKind",
+  isFork: "isFork",
+  isCompaction: "isCompaction"
 };
 
 function normalizeColumnSettings(raw: unknown): ColumnSetting[] {
   if (!Array.isArray(raw)) {
     return DEFAULT_COLUMN_ORDER.map((key) => ({
       key,
-      visible: true,
+      visible: DEFAULT_VISIBLE_COLUMNS.has(key),
       width: FIXED_WIDTH_COLUMNS.has(key) ? DEFAULT_COLUMN_WIDTHS[key] : null
     }));
   }
@@ -175,8 +261,7 @@ function normalizeColumnSettings(raw: unknown): ColumnSetting[] {
 
   for (const item of input) {
     const key = item?.key;
-    if (typeof key !== "string") continue;
-    if (!DEFAULT_COLUMN_ORDER.includes(key as ColumnKey)) continue;
+    if (typeof key !== "string" || !DEFAULT_COLUMN_ORDER.includes(key as ColumnKey)) continue;
     if (seen.has(key as ColumnKey)) continue;
     seen.add(key as ColumnKey);
     const parsedWidth = Number(item?.width);
@@ -185,19 +270,14 @@ function normalizeColumnSettings(raw: unknown): ColumnSetting[] {
       : FIXED_WIDTH_COLUMNS.has(key as ColumnKey)
         ? DEFAULT_COLUMN_WIDTHS[key as ColumnKey]
         : null;
-    ordered.push({
-      key: key as ColumnKey,
-      visible: item?.visible !== false,
-      width
-    });
+    ordered.push({ key: key as ColumnKey, visible: item?.visible !== false, width });
   }
 
   for (const key of DEFAULT_COLUMN_ORDER) {
     if (!seen.has(key)) {
-      ordered.push({ key, visible: true, width: FIXED_WIDTH_COLUMNS.has(key) ? DEFAULT_COLUMN_WIDTHS[key] : null });
+      ordered.push({ key, visible: DEFAULT_VISIBLE_COLUMNS.has(key), width: FIXED_WIDTH_COLUMNS.has(key) ? DEFAULT_COLUMN_WIDTHS[key] : null });
     }
   }
-
   return ordered;
 }
 
@@ -313,6 +393,8 @@ export default function RecordsPage() {
   const [serviceTierInput, setServiceTierInput] = useState("");
   const [statusInput, setStatusInput] = useState("");
   const [currencyInput, setCurrencyInput] = useState("");
+  const [advancedFilters, setAdvancedFilters] = useState<AdvancedFilters>({ ...EMPTY_ADVANCED_FILTERS });
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
   const [startInput, setStartInput] = useState("");
   const [endInput, setEndInput] = useState("");
   const [rangePickerOpen, setRangePickerOpen] = useState(false);
@@ -329,6 +411,7 @@ export default function RecordsPage() {
   const [appliedServiceTier, setAppliedServiceTier] = useState<string>("");
   const [appliedStatus, setAppliedStatus] = useState<string>("");
   const [appliedCurrency, setAppliedCurrency] = useState<string>("");
+  const [appliedAdvancedFilters, setAppliedAdvancedFilters] = useState<AdvancedFilters>({ ...EMPTY_ADVANCED_FILTERS });
   const [appliedStart, setAppliedStart] = useState<string>("");
   const [appliedEnd, setAppliedEnd] = useState<string>("");
 
@@ -337,12 +420,13 @@ export default function RecordsPage() {
   const [columnSettings, setColumnSettings] = useState<ColumnSetting[]>(
     DEFAULT_COLUMN_ORDER.map((key) => ({
       key,
-      visible: true,
+      visible: DEFAULT_VISIBLE_COLUMNS.has(key),
       width: FIXED_WIDTH_COLUMNS.has(key) ? DEFAULT_COLUMN_WIDTHS[key] : null
     }))
   );
   const [columnSettingsReady, setColumnSettingsReady] = useState(false);
   const [columnPanelOpen, setColumnPanelOpen] = useState(false);
+  const [selectedRecord, setSelectedRecord] = useState<{ id: number; occurredAt: string } | null>(null);
   const [tableContainerWidth, setTableContainerWidth] = useState(0);
   const columnPanelRef = useRef<HTMLDivElement | null>(null);
   const tableWrapperRef = useRef<HTMLDivElement | null>(null);
@@ -542,13 +626,26 @@ export default function RecordsPage() {
       if (appliedServiceTier) params.set("serviceTier", appliedServiceTier);
       if (appliedStatus) params.set("status", appliedStatus);
       if (appliedCurrency) params.set("currency", appliedCurrency);
+      for (const [key, value] of Object.entries(appliedAdvancedFilters)) {
+        const normalized = value.trim();
+        if (normalized) params.set(key, normalized);
+      }
       if (appliedStart) params.set("start", new Date(appliedStart).toISOString());
       if (appliedEnd) params.set("end", new Date(appliedEnd).toISOString());
       if (includeFilters) params.set("includeFilters", "1");
       return params;
     },
-    [sortKeys, appliedModel, appliedRoute, appliedSource, appliedProvider, appliedServiceTier, appliedStatus, appliedCurrency, appliedStart, appliedEnd]
+    [sortKeys, appliedModel, appliedRoute, appliedSource, appliedProvider, appliedServiceTier, appliedStatus, appliedCurrency, appliedAdvancedFilters, appliedStart, appliedEnd]
   );
+
+  const exportRecords = useCallback((format: "csv" | "json") => {
+    const params = buildParams(null, false);
+    params.delete("limit");
+    params.delete("sort");
+    params.delete("cursor");
+    params.set("format", format);
+    window.location.assign(`/api/records/export?${params.toString()}`);
+  }, [buildParams]);
 
   const fetchRecords = useCallback(
     async (opts: { cursor?: string | null; append?: boolean; includeFilters?: boolean } = {}) => {
@@ -729,6 +826,10 @@ export default function RecordsPage() {
     resetAndFetch(false);
   }, [sortKeys, resetAndFetch]);
 
+  const updateAdvancedFilter = (key: keyof AdvancedFilters, value: string) => {
+    setAdvancedFilters((previous) => ({ ...previous, [key]: value }));
+  };
+
   const applyFilters = (overrides?: { model?: string; route?: string; source?: string; start?: string; end?: string }) => {
     const nextModel = (overrides?.model ?? modelInput).trim();
     const nextRoute = (overrides?.route ?? routeInput).trim();
@@ -742,6 +843,7 @@ export default function RecordsPage() {
     setAppliedServiceTier(serviceTierInput.trim());
     setAppliedStatus(statusInput);
     setAppliedCurrency(currencyInput.trim().toUpperCase());
+    setAppliedAdvancedFilters({ ...advancedFilters });
     setAppliedStart(nextStart);
     setAppliedEnd(nextEnd);
   };
@@ -763,7 +865,7 @@ export default function RecordsPage() {
 
   useEffect(() => {
     resetAndFetch(false);
-  }, [appliedModel, appliedRoute, appliedSource, appliedProvider, appliedServiceTier, appliedStatus, appliedCurrency, appliedStart, appliedEnd, resetAndFetch]);
+  }, [appliedModel, appliedRoute, appliedSource, appliedProvider, appliedServiceTier, appliedStatus, appliedCurrency, appliedAdvancedFilters, appliedStart, appliedEnd, resetAndFetch]);
 
   const costTone = useCallback((cost: number) => {
     if (cost >= 5) return "bg-red-500/20 text-red-300 ring-1 ring-red-500/40";
@@ -842,57 +944,73 @@ export default function RecordsPage() {
 
   const renderCellByColumn = useCallback(
     (columnKey: ColumnKey, row: UsageRecord) => {
+      const muted = <span className="text-slate-600">—</span>;
+      const textCell = (value: string | null, maxWidth = 180) => value
+        ? <span className="block truncate text-slate-300" style={{ maxWidth }} title={value}>{value}</span>
+        : muted;
+      const numberCell = (value: number | null, suffix = "") => value === null
+        ? muted
+        : <span className="tabular-nums text-slate-300">{formatNumberWithCommas(value)}{suffix}</span>;
+      const booleanCell = (value: boolean | null) => value === null
+        ? muted
+        : <span className={value ? "text-emerald-300" : "text-slate-400"}>{value ? "是" : "否"}</span>;
+
       switch (columnKey) {
         case "occurredAt":
           return <div className="text-sm font-semibold text-white">{formatTimestamp(row.occurredAt)}</div>;
-        case "model":
-          return (
-            <div className="max-w-[220px] truncate font-semibold text-white" title={row.model}>
-              {row.model}
-            </div>
-          );
-        case "route":
-          return (
-            <div className="max-w-[200px] truncate text-slate-300" title={row.route}>
-              {row.route}
-            </div>
-          );
-        case "credentialName":
-          return (
-            <div className="max-w-[220px] truncate text-slate-300" title={row.credentialName || "-"}>
-              {row.credentialName || "-"}
-            </div>
-          );
-        case "provider":
-          return (
-            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${providerTone(row.provider)}`}>
-              {row.provider || "-"}
-            </span>
-          );
-        case "totalTokens":
-          return (
-            <span className="rounded-full bg-indigo-500/20 px-2.5 py-1 text-xs font-semibold text-indigo-200 ring-1 ring-indigo-500/30">
-              {formatNumberWithCommas(row.totalTokens)}
-            </span>
-          );
-        case "inputTokens":
-          return <span style={{ color: TOKEN_COLORS.input }}>{formatNumberWithCommas(row.inputTokens)}</span>;
-        case "outputTokens":
-          return <span style={{ color: TOKEN_COLORS.output }}>{formatNumberWithCommas(row.outputTokens)}</span>;
-        case "reasoningTokens":
-          return <span style={{ color: TOKEN_COLORS.reasoning }}>{formatNumberWithCommas(row.reasoningTokens)}</span>;
-        case "cachedTokens":
-          return <span style={{ color: TOKEN_COLORS.cached }}>{formatNumberWithCommas(row.cachedTokens)}</span>;
-        case "cost":
-          return (
-            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${costTone(row.cost ?? 0)}`}>
-              {row.cost === null ? "未定价" : `${formatCost(row.cost)} ${row.costCurrency}`}
-            </span>
-          );
         case "isError":
           return (
             <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(row.isError)}`}>
               {row.isError ? "失败" : "成功"}
+            </span>
+          );
+        case "provider":
+          return (
+            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${providerTone(row.provider)}`}>
+              {row.provider || "—"}
+            </span>
+          );
+        case "model":
+          return <div className="max-w-[220px] truncate font-semibold text-white" title={row.model}>{row.model}</div>;
+        case "modelAlias": return textCell(row.modelAlias, 160);
+        case "responseModel": return textCell(row.responseModel, 180);
+        case "requestId": return <span className="block max-w-[220px] truncate font-mono text-xs text-indigo-200" title={row.requestId ?? ""}>{row.requestId || "—"}</span>;
+        case "sessionId": return textCell(row.sessionId, 190);
+        case "parentSessionId": return textCell(row.parentSessionId, 190);
+        case "executionId": return textCell(row.executionId, 190);
+        case "traceId": return textCell(row.traceId, 190);
+        case "nodeKind": return textCell(row.nodeKind, 120);
+        case "isFork": return booleanCell(row.isFork);
+        case "isCompaction": return booleanCell(row.isCompaction);
+
+        case "route": return textCell(row.route, 170);
+        case "credentialName": return textCell(row.credentialName, 180);
+        case "apiGroupLabel": return textCell(row.apiGroupLabel, 140);
+        case "endpoint": return textCell(row.endpoint, 210);
+        case "authType": return textCell(row.authType, 120);
+        case "executorType": return textCell(row.executorType, 130);
+        case "accessProvider": return textCell(row.accessProvider, 140);
+        case "isNativeKey": return booleanCell(row.isNativeKey);
+        case "reasoningEffort": return textCell(row.reasoningEffort, 130);
+        case "serviceTier": return textCell(row.serviceTier, 130);
+        case "stream": return booleanCell(row.stream);
+        case "generate": return booleanCell(row.generate);
+        case "modelSubstituted": return booleanCell(row.modelSubstituted);
+        case "totalTokens":
+          return <span className="rounded-full bg-indigo-500/20 px-2.5 py-1 text-xs font-semibold text-indigo-200 ring-1 ring-indigo-500/30">{formatNumberWithCommas(row.totalTokens)}</span>;
+        case "inputTokens": return <span style={{ color: TOKEN_COLORS.input }}>{formatNumberWithCommas(row.inputTokens)}</span>;
+        case "outputTokens": return <span style={{ color: TOKEN_COLORS.output }}>{formatNumberWithCommas(row.outputTokens)}</span>;
+        case "reasoningTokens": return <span style={{ color: TOKEN_COLORS.reasoning }}>{formatNumberWithCommas(row.reasoningTokens)}</span>;
+        case "cachedTokens": return <span style={{ color: TOKEN_COLORS.cached }}>{formatNumberWithCommas(row.cachedTokens)}</span>;
+        case "cacheReadTokens": return <span className="tabular-nums text-violet-300">{formatNumberWithCommas(row.cacheReadTokens)}</span>;
+        case "cacheCreationTokens": return <span className="tabular-nums text-fuchsia-300">{formatNumberWithCommas(row.cacheCreationTokens)}</span>;
+        case "latencyMs": return numberCell(row.latencyMs, " ms");
+        case "ttftMs": return numberCell(row.ttftMs, " ms");
+        case "statusCode": return numberCell(row.statusCode);
+        case "cost":
+          return (
+            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${costTone(row.cost ?? 0)}`}>
+              {row.cost === null ? "未定价" : `${formatCost(row.cost)} ${row.costCurrency}`}
             </span>
           );
         default:
@@ -901,20 +1019,24 @@ export default function RecordsPage() {
     },
     [costTone, providerTone, statusTone]
   );
-
   const filterSummary = useMemo(() => {
     const parts: string[] = [];
     if (appliedModel) parts.push(`模型: ${appliedModel}`);
     if (appliedRoute) parts.push(`密钥: ${appliedRoute}`);
     if (appliedSource) parts.push(`凭证: ${appliedSource}`);
+    if (appliedProvider) parts.push(`Provider: ${appliedProvider}`);
+    if (appliedServiceTier) parts.push(`Tier: ${appliedServiceTier}`);
+    if (appliedStatus) parts.push(`状态: ${appliedStatus === "error" ? "失败" : "成功"}`);
+    if (appliedCurrency) parts.push(`币种: ${appliedCurrency}`);
+    const advancedCount = Object.values(appliedAdvancedFilters).filter((value) => value.trim()).length;
+    if (advancedCount) parts.push(`高级条件: ${advancedCount} 项`);
     if (appliedStart || appliedEnd) {
       const startLabel = appliedStart ? formatDateTimeDisplay(appliedStart) : "-";
       const endLabel = appliedEnd ? formatDateTimeDisplay(appliedEnd) : "-";
       parts.push(`时间: ${startLabel} ~ ${endLabel}`);
     }
     return parts.length ? parts.join(" / ") : "暂无筛选";
-  }, [appliedModel, appliedRoute, appliedSource, appliedStart, appliedEnd]);
-
+  }, [appliedModel, appliedRoute, appliedSource, appliedProvider, appliedServiceTier, appliedStatus, appliedCurrency, appliedAdvancedFilters, appliedStart, appliedEnd]);
   const rangeLabel = useMemo(() => {
     if (!startInput && !endInput) return "选择时间范围";
     const startLabel = startInput ? formatDateTimeDisplay(startInput) : "-";
@@ -978,7 +1100,7 @@ export default function RecordsPage() {
       return;
     }
     try {
-      const raw = window.localStorage.getItem(COLUMN_SETTINGS_STORAGE_KEY);
+      const raw = window.localStorage.getItem(COLUMN_SETTINGS_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_COLUMN_SETTINGS_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as unknown;
         setColumnSettings(normalizeColumnSettings(parsed));
@@ -987,7 +1109,7 @@ export default function RecordsPage() {
       setColumnSettings(
         DEFAULT_COLUMN_ORDER.map((key) => ({
           key,
-          visible: true,
+          visible: DEFAULT_VISIBLE_COLUMNS.has(key),
           width: FIXED_WIDTH_COLUMNS.has(key) ? DEFAULT_COLUMN_WIDTHS[key] : null
         }))
       );
@@ -1055,6 +1177,12 @@ export default function RecordsPage() {
             <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
             {syncing ? "同步中..." : "刷新"}
           </button>
+          <button type="button" onClick={() => exportRecords("csv")} className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 font-semibold text-slate-200 hover:border-slate-500">
+            <Download className="h-4 w-4" /> CSV
+          </button>
+          <button type="button" onClick={() => exportRecords("json")} className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 font-semibold text-slate-200 hover:border-slate-500">
+            <FileJson className="h-4 w-4" /> JSON
+          </button>
         </div>
       </header>
 
@@ -1106,6 +1234,10 @@ export default function RecordsPage() {
           <input value={serviceTierInput} onChange={(event) => setServiceTierInput(event.target.value)} placeholder="Service Tier" className="w-32 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200" />
           <select value={statusInput} onChange={(event) => setStatusInput(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200"><option value="">全部状态</option><option value="success">成功</option><option value="error">失败</option></select>
           <input value={currencyInput} onChange={(event) => setCurrencyInput(event.target.value)} placeholder="币种" className="w-20 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200" />
+          <input value={advancedFilters.q} onChange={(event) => updateAdvancedFilter("q", event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }} placeholder="搜索 Request ID / Model / Endpoint" className="w-64 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600" />
+          <button type="button" onClick={() => setAdvancedFiltersOpen((previous) => !previous)} className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${advancedFiltersOpen ? "border-indigo-500/60 bg-indigo-500/10 text-indigo-200" : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500"}`}>
+            <Search className="h-4 w-4" /> 高级筛选
+          </button>
           <div className="relative" ref={rangePickerRef}>
             <button
               type="button"
@@ -1213,6 +1345,7 @@ export default function RecordsPage() {
             ) : null}
           </div>
 
+          <button type="button" onClick={() => applyFilters()} className="rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">应用筛选</button>
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -1220,13 +1353,28 @@ export default function RecordsPage() {
                 setModelInput("");
                 setRouteInput("");
                 setSourceInput("");
+                setProviderInput("");
+                setServiceTierInput("");
+                setStatusInput("");
+                setCurrencyInput("");
+                setAdvancedFilters({ ...EMPTY_ADVANCED_FILTERS });
+                setAppliedAdvancedFilters({ ...EMPTY_ADVANCED_FILTERS });
                 setStartInput("");
                 setEndInput("");
                 setAppliedModel("");
                 setAppliedRoute("");
                 setAppliedSource("");
+                setAppliedProvider("");
+                setAppliedServiceTier("");
+                setAppliedStatus("");
+                setAppliedCurrency("");
                 setAppliedStart("");
                 setAppliedEnd("");
+                setRange(undefined);
+                setRangePickerOpen(false);
+                setRangeError(null);
+                setTimeStart("00:00");
+                setTimeEnd("23:59");
               }}
               className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-1.5 text-sm font-semibold text-slate-300 hover:border-slate-500"
             >
@@ -1285,6 +1433,53 @@ export default function RecordsPage() {
             ) : null}
           </div>
         </div>
+        {advancedFiltersOpen ? (
+          <div className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-slate-700 bg-slate-900/60 p-3 sm:grid-cols-2 lg:grid-cols-4">
+            {([
+              ["requestId", "Request ID"],
+              ["apiGroupLabel", "API Group"],
+              ["endpoint", "Endpoint"],
+              ["authType", "Auth Type"],
+              ["executorType", "Executor"],
+              ["reasoningEffort", "Reasoning Effort"],
+              ["modelAlias", "Model Alias"],
+              ["responseModel", "Response Model"],
+              ["statusCode", "HTTP Status"],
+              ["latencyMin", "最小延迟（ms）"],
+              ["latencyMax", "最大延迟（ms）"],
+              ["tokensMin", "最小 Tokens"],
+              ["tokensMax", "最大 Tokens"]
+            ] as Array<[Exclude<keyof AdvancedFilters, "q" | "costStatus">, string]>).map(([key, label]) => (
+              <label key={key} className="block text-xs text-slate-400">
+                {label}
+                <input
+                  value={advancedFilters[key]}
+                  onChange={(event) => updateAdvancedFilter(key, event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }}
+                  placeholder={label}
+                  inputMode={key === "statusCode" || key.includes("Min") || key.includes("Max") ? "numeric" : "text"}
+                  className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600"
+                />
+              </label>
+            ))}
+            <label className="block text-xs text-slate-400">
+              费用状态
+              <select
+                value={advancedFilters.costStatus}
+                onChange={(event) => updateAdvancedFilter("costStatus", event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+              >
+                <option value="">全部</option>
+                <option value="priced">已定价</option>
+                <option value="unpriced">未定价 / 定价异常</option>
+              </select>
+            </label>
+            <div className="flex items-end gap-2">
+              <button type="button" onClick={() => applyFilters()} className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">应用高级筛选</button>
+              <button type="button" onClick={() => { setAdvancedFilters({ ...EMPTY_ADVANCED_FILTERS }); setAppliedAdvancedFilters({ ...EMPTY_ADVANCED_FILTERS }); }} className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:border-slate-500">清空高级条件</button>
+            </div>
+          </div>
+        ) : null}
         <p className="mt-3 text-xs text-slate-500">当前筛选：{filterSummary}</p>
       </section>
 
@@ -1322,7 +1517,17 @@ export default function RecordsPage() {
                 {records.map((row) => (
                   <tr
                     key={row.id}
-                    className="group h-13 rounded-lg bg-slate-900/70 text-slate-100 shadow-sm ring-1 ring-slate-800 transition hover:shadow-[0_0_24px_rgba(99,102,241,0.18)]"
+                    tabIndex={0}
+                    aria-label={`查看请求详情：${row.requestId || row.id}`}
+                    aria-expanded={selectedRecord?.id === row.id}
+                    onClick={() => setSelectedRecord({ id: row.id, occurredAt: row.occurredAt })}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedRecord({ id: row.id, occurredAt: row.occurredAt });
+                      }
+                    }}
+                    className="group h-13 cursor-pointer rounded-lg bg-slate-900/70 text-slate-100 shadow-sm ring-1 ring-slate-800 transition hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400"
                   >
                     {visibleColumns.map((columnKey, index) => {
                       const width = adaptiveWidthMap.get(columnKey) ?? DEFAULT_COLUMN_WIDTHS[columnKey];
@@ -1405,6 +1610,13 @@ export default function RecordsPage() {
           </div>
         </div>
       )}
+      {selectedRecord ? (
+        <RecordDetailsDrawer
+          eventId={selectedRecord.id}
+          occurredAt={selectedRecord.occurredAt}
+          onClose={() => setSelectedRecord(null)}
+        />
+      ) : null}
     </main>
   );
 }
