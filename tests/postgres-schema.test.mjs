@@ -244,7 +244,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     const initialChannelVersion = await scopedPool.query(
       "SELECT id, multiplier FROM pricing_channel_versions WHERE channel = 'openai' AND available = true ORDER BY effective_from DESC LIMIT 1"
     );
-    assert.equal(initialChannelVersion.rows[0].multiplier, "2");
+    assert.equal(Number(initialChannelVersion.rows[0].multiplier), 2);
     const eventTimestamp = new Date(Date.now() + 60_000).toISOString();
     const record = {
       timestamp: eventTimestamp,
@@ -405,7 +405,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
       "SELECT id, multiplier FROM pricing_channel_versions WHERE channel = 'openai' ORDER BY effective_from, id"
     );
     assert.equal(channelVersions.rowCount, 2);
-    assert.deepEqual(channelVersions.rows.map((row) => row.multiplier), ["2", "3"]);
+    assert.deepEqual(channelVersions.rows.map((row) => Number(row.multiplier)), [2, 3]);
 
     const laterRecord = {
       ...record,

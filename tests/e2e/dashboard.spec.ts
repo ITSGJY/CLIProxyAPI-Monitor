@@ -82,7 +82,7 @@ test("records page exposes configurable event columns, request details and filte
     isCompaction: false,
     authType: "oauth",
     stream: true,
-    generate: false,
+    generate: true,
     model: "gpt-6",
     modelAlias: "gpt-6",
     responseModel: "gpt-6",
@@ -140,6 +140,26 @@ test("records page exposes configurable event columns, request details and filte
     rawPayload: { request_id: "req-e2e-001", api_key: "****1234", authorization: "[redacted]" },
     priceVersionId: 7,
     sourcePriceVersionId: "source-price-7",
+    channelVersionId: 3,
+    priceTierIndex: 0,
+    resolvedServiceTier: "priority",
+    pricingPolicyVersion: 1,
+    accountingStatus: "complete",
+    resourceId: "resource-e2e-001",
+    resourceName: "E2E Resource",
+    costBreakdown: {
+      policy_version: 1,
+      buckets: [
+        { kind: "input", tokens: "600", rate_per_1m: "2" },
+        { kind: "cache_read", tokens: "400", rate_per_1m: "1" },
+        { kind: "output", tokens: "500", rate_per_1m: "8" }
+      ],
+      model_multiplier: "1.2",
+      channel_multiplier: "1",
+      selected_tier_index: 0,
+      selected_tier: { service_tiers: ["priority"] },
+      total_cost_nanos: "1200000"
+    },
     createdAt: "2026-11-19T06:00:02.000Z"
   };
 
@@ -157,6 +177,14 @@ test("records page exposes configurable event columns, request details and filte
     });
   });
   await page.route("**/api/records/detail?*", (route) => route.fulfill({ status: 200, json: { item: detail } }));
+  await page.route("**/api/records/request-log?*", (route) => route.fulfill({
+    status: 200,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "content-disposition": 'attachment; filename="request-req-e2e-001.log"'
+    },
+    body: "request_id=req-e2e-001\\nmodel=gpt-6\\n"
+  }));
   await page.route("**/api/records/export?*", (route) => route.fulfill({
     status: 200,
     headers: {
@@ -217,11 +245,35 @@ test("records page exposes configurable event columns, request details and filte
   await page.getByText("req-e2e-001", { exact: true }).first().click();
   const dialog = page.getByRole("dialog", { name: "请求详情" });
   await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("tab", { name: "概览" })).toHaveAttribute("aria-selected", "true");
+  await expect(dialog.getByText("调用链路")).toBeVisible();
+  await expect(dialog.getByText("请求性能")).toBeVisible();
+  await expect(dialog.getByText("Token 构成")).toBeVisible();
+
+  await dialog.getByRole("tab", { name: "用量与计价" }).click();
+  await expect(dialog.getByText("Token Accounting · complete")).toBeVisible();
+  await expect(dialog.getByText("Token 用量明细")).toBeVisible();
+  await expect(dialog.getByText("费用与计价证据")).toBeVisible();
+  await expect(dialog.getByText("Cache Read Tokens")).toBeVisible();
+  await expect(dialog.getByText("Input Tokens Details")).toBeVisible();
+  await expect(dialog.getByText("Cached Tokens").last()).toBeVisible();
+  await expect(dialog.getByText("Output Tokens Details")).toBeVisible();
+  await expect(dialog.getByText("Reasoning Tokens").last()).toBeVisible();
+
+  await dialog.getByRole("tab", { name: "诊断" }).click();
+  await expect(dialog.getByText("响应头")).toBeVisible();
+  await expect(dialog.getByText("Client IP")).toBeVisible();
+  const requestLogDownloadPromise = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "下载 CPA 请求日志" }).click();
+  const requestLogDownload = await requestLogDownloadPromise;
+  expect(requestLogDownload.suggestedFilename()).toBe("request-101.log");
+
+  await dialog.getByRole("tab", { name: "原始字段" }).click();
+  await expect(dialog.getByText("执行上下文")).toBeVisible();
+  await expect(dialog.getByText("Session ID")).toBeVisible();
   await expect(dialog.getByText("session-e2e-001")).toBeVisible();
   await expect(dialog.getByText("execution-e2e-001")).toBeVisible();
-  await expect(dialog.getByText("Cache Read Tokens")).toBeVisible();
-  await expect(dialog.getByText("Token Accounting")).toBeVisible();
-  await expect(dialog.getByText("Response Headers（已脱敏）")).toBeVisible();
+  await expect(dialog.getByText("Raw Payload（已脱敏）")).toBeVisible();
   await dialog.getByRole("button", { name: "关闭请求详情" }).click();
   await expect(dialog).toBeHidden();
 

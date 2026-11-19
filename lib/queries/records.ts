@@ -228,9 +228,17 @@ export async function getUsageRecordDetails(eventId: number) {
     failBody: usageEvents.failBody,
     responseHeaders: usageEvents.responseHeaders,
     tokenAccounting: usageEvents.tokenAccounting,
+    accountingStatus: sql<string | null>`${usageEvents.tokenAccounting}->>'status'`,
     structuredUsage: usageEvents.structuredUsage,
     rawPayload: usageEvents.rawPayload,
+    resourceId: sql<string | null>`coalesce(${usageEvents.rawPayload}->>'resource_id', ${usageEvents.rawPayload}->>'resourceId')`,
+    resourceName: sql<string | null>`coalesce(${usageEvents.rawPayload}->>'resource_name', ${usageEvents.rawPayload}->>'resourceName')`,
     sourcePriceVersionId: usageEvents.sourcePriceVersionId,
+    channelVersionId: usageEvents.channelVersionId,
+    priceTierIndex: usageEvents.priceTierIndex,
+    resolvedServiceTier: usageEvents.resolvedServiceTier,
+    pricingPolicyVersion: usageEvents.pricingPolicyVersion,
+    costBreakdown: usageEvents.costBreakdown,
     createdAt: usageEvents.createdAt
   })
     .from(usageEvents)

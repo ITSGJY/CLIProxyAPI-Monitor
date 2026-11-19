@@ -8,6 +8,11 @@
 - 完成 Phase 4：新增独立 \`/pricing\` 页面与价格、同步、关联、渠道倍率、试算 API；支持 Auto / Linked / Custom、四桶编辑、Tier JSON、自动同步间隔、源目录状态及价格 / 渠道历史。
 - 价格版本与已计价请求证据改为不可变追加式记录；缺失费率不再按零计费，超出 PostgreSQL bigint 范围或 Token 桶不一致时拒绝生成金额。
 - 新增 Pricing 单元与 PostgreSQL 17 回归覆盖；未执行 Phase 5 历史回算，未切换或停止生产 CPA Collector / RESP Subscription。
+- 修复 PostgreSQL 17 集成测试对 `numeric(30,12)` 渠道倍率的字符串比较问题，改为数值断言，避免数据库固定小数位格式造成误报。
+- 参考 OMC v0.4.2 的详情信息层级重构 `/records` 抽屉，拆分为“概览 / 用量与计价 / 诊断 / 原始字段”四个视图；首屏突出请求状态、耗时、TTFT、输出速率、Token 和费用。
+- 详情概览新增调用链路、模型路由、性能阶段与 Token 构成；用量页展示 Token Accounting、Structured Usage、四桶费率及价格/渠道版本证据；诊断页将响应头改为表格并增加网络信息。
+- 新增按事件 ID 安全代理下载 CPA 请求日志的接口；详情查询补充渠道版本、Tier、计价策略、成本明细及 Resource ID/Name。
+- 保留 Monitor 原有 Slate 深色面板、Indigo 强调色与现有 Tailwind 组件风格，不引入 OMC 的独立主题系统。
 
 - 完成 `/records` 请求事件分析工作台改造：支持自定义列、详情抽屉、高级筛选和 CSV/JSON 导出；新增 CPA 请求上下文专用字段及 PostgreSQL 迁移。
 - 修复迁移预检误将其他 schema 中的 `model_prices` 当作当前目标 schema 已迁移的问题，并增加 PostgreSQL 回归断言。
