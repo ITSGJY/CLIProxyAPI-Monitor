@@ -382,7 +382,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
          output_price_per_1m = EXCLUDED.output_price_per_1m`
     );
     const noOpPriceHistory = await scopedPool.query(
-      "SELECT count(*) AS versions FROM model_price_versions WHERE model = 'gpt-test'"
+      "SELECT count(*) AS versions FROM model_price_versions WHERE model = 'gpt-test' AND provider IS NULL"
     );
     assert.equal(Number(noOpPriceHistory.rows[0].versions), 1, "no-op upsert must not create a price version");
 
@@ -395,7 +395,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
          output_price_per_1m = EXCLUDED.output_price_per_1m`
     );
     const priceHistory = await scopedPool.query(
-      "SELECT count(*) AS versions, count(*) FILTER (WHERE valid_to IS NOT NULL) AS closed_versions FROM model_price_versions WHERE model = 'gpt-test'"
+      "SELECT count(*) AS versions, count(*) FILTER (WHERE valid_to IS NOT NULL) AS closed_versions FROM model_price_versions WHERE model = 'gpt-test' AND provider IS NULL"
     );
     assert.equal(Number(priceHistory.rows[0].versions), 2);
     assert.equal(Number(priceHistory.rows[0].closed_versions), 0, "price versions are append-only and never rewritten");
