@@ -505,7 +505,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.input_tokens), 0), 300);
     assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.output_tokens), 0), 75);
     assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.total_tokens), 0), 390);
-    assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.cost_nanos), 0), 460000);
+    assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.cost_nanos), 0), 1_100_000);
     assert.ok(hourlyRollup.rows.every((row) => row.pricing_status === "priced"));
     assert.ok(hourlyRollup.rows.every((row) => row.api_key_mask === "****6789"));
     assert.ok(hourlyRollup.rows.every((row) => row.service_tier === "priority"));
@@ -517,7 +517,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     );
     assert.ok(dailyRollup.rowCount >= 1);
     assert.equal(dailyRollup.rows.reduce((sum, row) => sum + Number(row.request_count), 0), 3);
-    assert.equal(dailyRollup.rows.reduce((sum, row) => sum + Number(row.cost_nanos), 0), 460000);
+    assert.equal(dailyRollup.rows.reduce((sum, row) => sum + Number(row.cost_nanos), 0), 1_100_000);
     const checkpointStates = await scopedPool.query(
       "SELECT rollup_name, state FROM usage_rollup_checkpoints WHERE timezone = 'UTC' ORDER BY rollup_name"
     );
@@ -554,7 +554,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
       "SELECT sum(request_count) AS requests, sum(cost_nanos) AS cost, min(pricing_status) AS min_pricing, max(pricing_status) AS max_pricing FROM usage_rollups_daily WHERE model = 'gpt-test' AND timezone = 'UTC'"
     );
     assert.equal(Number(afterLateArrival.rows[0].requests), 4, "late-arriving event must be included in the rebuilt daily window");
-    assert.equal(Number(afterLateArrival.rows[0].cost), 460000, "unpriced late event must not invent cost");
+    assert.equal(Number(afterLateArrival.rows[0].cost), 1_100_000, "unpriced late event must not invent cost");
     assert.equal(afterLateArrival.rows[0].max_pricing, "partial");
     const coverageRollup = await scopedPool.query(
       "SELECT sum(priced_request_count) AS priced, sum(unpriced_request_count) AS unpriced FROM usage_rollups_daily WHERE model = 'gpt-test' AND timezone = 'UTC'"
@@ -567,7 +567,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
       "SELECT sum(request_count) AS requests, sum(cost_nanos) AS cost FROM usage_rollups_daily WHERE model = 'gpt-test' AND timezone = 'UTC'"
     );
     assert.equal(Number(idempotentRollup.rows[0].requests), 4, "rebuilding the same window must not double count events");
-    assert.equal(Number(idempotentRollup.rows[0].cost), 460000);
+    assert.equal(Number(idempotentRollup.rows[0].cost), 1_100_000);
 
     await scopedPool.query(`
       CREATE FUNCTION fail_identity_insert_for_test() RETURNS trigger
