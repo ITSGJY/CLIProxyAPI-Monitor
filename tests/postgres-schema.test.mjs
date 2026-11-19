@@ -347,7 +347,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     assert.equal(Number(pricedEvent.rows[0].price_version_id), Number(initialPrice.rows[0].price_version_id));
     assert.equal(Number(pricedEvent.rows[0].channel_version_id), Number(initialChannelVersion.rows[0].id));
     assert.equal(pricedEvent.rows[0].pricing_policy_version, 1);
-    assert.equal(pricedEvent.rows[0].cost_breakdown.channel_multiplier, "2");
+    assert.equal(Number(pricedEvent.rows[0].cost_breakdown.channel_multiplier), 2);
     await assert.rejects(
       scopedPool.query("UPDATE usage_events SET pricing_status = 'unpriced' WHERE request_id = $1", ["phase1-request-001"]),
       /priced usage evidence is immutable/
@@ -436,7 +436,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     assert.notEqual(Number(laterPricedEvent.rows[0].price_version_id), Number(initialPrice.rows[0].price_version_id));
     assert.notEqual(Number(laterPricedEvent.rows[0].channel_version_id), Number(initialChannelVersion.rows[0].id));
     assert.equal(Number(laterPricedEvent.rows[0].cost_nanos), 540000);
-    assert.equal(laterPricedEvent.rows[0].cost_breakdown.channel_multiplier, "3");
+    assert.equal(Number(laterPricedEvent.rows[0].cost_breakdown.channel_multiplier), 3);
 
     await scopedPool.query("DELETE FROM model_prices WHERE model = 'gpt-test'");
     const deletedPriceHistory = await scopedPool.query(
