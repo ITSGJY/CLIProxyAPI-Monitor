@@ -261,7 +261,7 @@ test("records page exposes configurable event columns, request details and filte
   await expect(dialog.getByText("Reasoning Tokens").last()).toBeVisible();
 
   await dialog.getByRole("tab", { name: "诊断" }).click();
-  await expect(dialog.getByText("响应头")).toBeVisible();
+  await expect(dialog.getByRole("heading", { name: "响应头" })).toBeVisible();
   await expect(dialog.getByText("Client IP")).toBeVisible();
   const requestLogDownloadPromise = page.waitForEvent("download");
   await dialog.getByRole("button", { name: "下载 CPA 请求日志" }).click();
