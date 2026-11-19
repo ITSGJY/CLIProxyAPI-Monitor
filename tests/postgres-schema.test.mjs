@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
@@ -23,6 +24,53 @@ import {
 import { refreshUsageRollups } from "../lib/collector/rollups.mjs";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
+
+test("PostgreSQL migration preflight ignores model_prices in an unrelated schema", {
+  skip: !testDatabaseUrl
+}, async () => {
+  const parsedUrl = new URL(testDatabaseUrl);
+  const databaseName = decodeURIComponent(parsedUrl.pathname.replace(/^\//, ""));
+  assert.ok(["127.0.0.1", "localhost"].includes(parsedUrl.hostname), "TEST_DATABASE_URL must use loopback");
+  assert.ok(databaseName.toLowerCase().includes("test"), "TEST_DATABASE_URL database name must include test");
+
+  const { Pool } = await import("pg");
+  const adminPool = new Pool({ connectionString: testDatabaseUrl, max: 1 });
+  const targetDatabase = "phase8_migration_preflight_test_" + randomUUID().replaceAll("-", "");
+  const targetUrl = new URL(testDatabaseUrl);
+  targetUrl.pathname = "/" + targetDatabase;
+  let targetPool;
+
+  try {
+    await adminPool.query(`CREATE DATABASE "${targetDatabase}"`);
+    targetPool = new Pool({ connectionString: targetUrl.toString(), max: 1 });
+    await targetPool.query("CREATE SCHEMA unrelated_probe");
+    await targetPool.query("CREATE TABLE unrelated_probe.model_prices (id integer PRIMARY KEY)");
+    await targetPool.end();
+    targetPool = undefined;
+
+    const migrationOutput = execFileSync(process.execPath, ["scripts/migrate.mjs"], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: targetUrl.toString(), DATABASE_DRIVER: "pg" }
+    });
+    assert.match(migrationOutput, /迁移完成/);
+
+    targetPool = new Pool({ connectionString: targetUrl.toString(), max: 1 });
+    const verification = await targetPool.query(
+      `SELECT
+         (SELECT count(*)::int FROM drizzle.__drizzle_migrations) AS migration_count,
+         to_regclass('public.usage_events') IS NOT NULL AS usage_events_created,
+         to_regclass('unrelated_probe.model_prices') IS NOT NULL AS unrelated_table_preserved`
+    );
+    assert.equal(verification.rows[0].migration_count, 10);
+    assert.equal(verification.rows[0].usage_events_created, true);
+    assert.equal(verification.rows[0].unrelated_table_preserved, true);
+  } finally {
+    if (targetPool) await targetPool.end();
+    await adminPool.query(`DROP DATABASE IF EXISTS "${targetDatabase}" WITH (FORCE)`);
+    await adminPool.end();
+  }
+});
+
 
 test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplication and rollups", {
   skip: !testDatabaseUrl
@@ -747,7 +795,8 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     const termination = await adminPool.query("SELECT pg_terminate_backend($1)", [backend.rows[0].pid]);
     assert.equal(termination.rows[0].pg_terminate_backend, true);
     const backendError = await backendErrorPromise;
-    assert.equal(backendError.code, "57P01", "the terminated backend error should be observed by the borrowed client");    doomedClient.release(true);
+    assert.equal(backendError.code, "57P01", "the terminated backend error should be observed by the borrowed client");
+    doomedClient.release(true);
     const recoveredConnection = await scopedPool.query("SELECT 1 AS recovered");
     assert.equal(recoveredConnection.rows[0].recovered, 1);
 

@@ -157,7 +157,8 @@ test("records page exposes configurable event columns, request details and filte
     });
   });
   await page.route("**/api/records/detail?*", (route) => route.fulfill({ status: 200, json: { item: detail } }));
-  await page.route("**/api/records/export?*", (route) => route.fulfill({    status: 200,
+  await page.route("**/api/records/export?*", (route) => route.fulfill({
+    status: 200,
     headers: {
       "content-type": "text/csv; charset=utf-8",
       "content-disposition": 'attachment; filename="monitor-records-e2e.csv"'
@@ -208,7 +209,8 @@ test("records page exposes configurable event columns, request details and filte
   await searchInput.fill("session-e2e-001");
   await searchInput.press("Enter");
   await expect.poll(() => recordListQueries.some((query) => query.searchParams.get("q") === "session-e2e-001")).toBe(true);
-  await expect.poll(() => page.evaluate(() => {    const raw = localStorage.getItem("records-column-settings-v3");
+  await expect.poll(() => page.evaluate(() => {
+    const raw = localStorage.getItem("records-column-settings-v3");
     return raw ? JSON.parse(raw).find((column: { key: string }) => column.key === "cacheReadTokens")?.visible : null;
   })).toBe(true);
 

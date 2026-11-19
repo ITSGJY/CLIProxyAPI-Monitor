@@ -129,8 +129,9 @@ async function runMigrations() {
 
     // 如果表已存在，需要确保对应的迁移已标记
     if (tableExists.rows[0]?.exists === true) {
-      // 找出 0000 迁移      const initialMigration = allMigrations.find((m) => m.tag.startsWith("0000_"));
-      
+      // 找出 0000 迁移
+      const initialMigration = allMigrations.find((m) => m.tag.startsWith("0000_"));
+
       if (initialMigration && !existingHashes.has(initialMigration.hash)) {
         console.log("检测到表已存在但迁移未标记，正在标记...");
         await pool.query(
