@@ -11,7 +11,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/collector/*.test.mjs",
+    "test": "node --test tests/collector/*.test.mjs tests/pricing/*.test.mjs",
     "test:postgres": "node --test tests/postgres-schema.test.mjs",
     "db:migrate": "node scripts/migrate.mjs",
     "collector": "node scripts/collector.mjs",

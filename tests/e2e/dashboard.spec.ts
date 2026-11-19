@@ -230,3 +230,78 @@ test("records page exposes configurable event columns, request details and filte
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe("monitor-records-e2e.csv");
 });
+test("Pricing Center exposes safe model linking, custom prices, channel multipliers and quote preview", async ({ page }) => {
+  const fixture = {
+    summary: { observedModels: 1, pricedModels: 0, unpricedModels: 1, ambiguousModels: 1, catalogOfferings: 2 },
+    models: [{
+      model: "gpt-test", provider: "relay", requests: 12, totalTokens: "12000",
+      pricedRequests: 0, pricingStatus: "unpriced", priceMode: null, price: null, link: null,
+      matchStatus: "ambiguous", matchKind: null,
+      candidates: [
+        { providerId: "openai", modelId: "gpt-test", name: "GPT Test", inputPricePer1M: "2", outputPricePer1M: "8", cacheReadPricePer1M: "1", cacheWritePricePer1M: "2" },
+        { providerId: "relay", modelId: "gpt-test", name: "Relay GPT Test", inputPricePer1M: "3", outputPricePer1M: "9", cacheReadPricePer1M: "1.5", cacheWritePricePer1M: "3" }
+      ],
+      referenceCandidates: []
+    }],
+    prices: [], channels: [],
+    syncState: [{ source: "models.dev", auto_sync_interval_hours: 24, last_success_at: "2026-11-19T12:00:00Z", last_hash: "a".repeat(64), latest_status: "success" }],
+    snapshots: [], priceVersions: []
+  };
+  const writes: string[] = [];
+  await page.route("**/api/pricing", async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, json: fixture });
+    writes.push("price");
+    return route.fulfill({ status: 200, json: { ok: true, price: {} } });
+  });
+  await page.route("**/api/pricing/link", async (route) => {
+    writes.push("link");
+    return route.fulfill({ status: 200, json: { ok: true } });
+  });
+  await page.route("**/api/pricing/channels", async (route) => {
+    writes.push("channel");
+    return route.fulfill({ status: 200, json: { ok: true } });
+  });
+  await page.route("**/api/pricing/sync", async (route) => {
+    if (route.request().method() === "PATCH") {
+      writes.push("interval");
+      return route.fulfill({ status: 200, json: { ok: true, state: {} } });
+    }
+    writes.push("sync");
+    return route.fulfill({ status: 200, json: { status: "success", results: [] } });
+  });
+  await page.route("**/api/pricing/preview", async (route) => {
+    writes.push("preview");
+    return route.fulfill({ status: 200, json: { quote: { status: "priced", costNanos: "2287500", priceVersionId: 1, channelVersionId: 1, priceTierIndex: null, breakdown: { total_cost_nanos: "2287500" } } } });
+  });
+
+  await login(page);
+  await page.goto("/pricing");
+  await expect(page.getByRole("heading", { name: "模型价格体系" })).toBeVisible();
+  await expect(page.getByText("gpt-test", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("存在歧义")).toBeVisible();
+
+  await page.getByRole("button", { name: "关联" }).click();
+  await expect.poll(() => writes.includes("link")).toBe(true);
+
+  await page.getByRole("button", { name: "编辑 / 试算" }).click();
+  await page.getByLabel("普通输入（USD / 1M）").fill("2");
+  await page.getByLabel("缓存读取（USD / 1M）").fill("1");
+  await page.getByLabel("输出（USD / 1M）").fill("8");
+  await page.getByLabel("缓存写入（USD / 1M）").fill("2");
+  await page.getByRole("button", { name: "保存 Custom 价格" }).click();
+  await expect.poll(() => writes.includes("price")).toBe(true);
+
+  await page.getByLabel("CPA 渠道名称").fill("relay");
+  await page.getByLabel("备注").fill("E2E test channel");
+  await page.getByRole("button", { name: "保存倍率" }).click();
+  await expect.poll(() => writes.includes("channel")).toBe(true);
+
+  await page.getByLabel("自动同步间隔").first().fill("12");
+  await page.getByRole("button", { name: "保存间隔" }).first().click();
+  await expect.poll(() => writes.includes("interval")).toBe(true);
+
+  await page.getByLabel("模型 ID").last().fill("gpt-test");
+  await page.getByRole("button", { name: "试算成本" }).click();
+  await expect.poll(() => writes.includes("preview")).toBe(true);
+  await expect(page.getByText("priced", { exact: true })).toBeVisible();
+});

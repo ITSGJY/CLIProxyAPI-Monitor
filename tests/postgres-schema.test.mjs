@@ -61,7 +61,7 @@ test("PostgreSQL migration preflight ignores model_prices in an unrelated schema
          to_regclass('public.usage_events') IS NOT NULL AS usage_events_created,
          to_regclass('unrelated_probe.model_prices') IS NOT NULL AS unrelated_table_preserved`
     );
-    assert.equal(verification.rows[0].migration_count, 10);
+    assert.equal(verification.rows[0].migration_count, 11);
     assert.equal(verification.rows[0].usage_events_created, true);
     assert.equal(verification.rows[0].unrelated_table_preserved, true);
   } finally {
@@ -105,7 +105,8 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
         "0006_phase5_dashboard_rollup_dimensions.sql",
         "0007_phase6_legacy_import.sql",
         "0008_resp_subscription.sql",
-        "0009_request_event_context.sql"
+        "0009_request_event_context.sql",
+        "0010_pricing_center.sql"
       ];
       for (const migration of migrations) {
         const sql = await readFile(new URL("../drizzle/" + migration, import.meta.url), "utf8");
@@ -230,11 +231,13 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     );
     assert.ok(initialPrice.rows[0].price_version_id, "model price insert must create a version");
     await scopedPool.query(
-      "UPDATE model_price_versions SET valid_from = now() - interval '5 minutes' WHERE id = $1",
-      [initialPrice.rows[0].price_version_id]
+      "INSERT INTO pricing_channels (channel, multiplier, note) VALUES ('openai', 2, 'PostgreSQL pricing integration test')"
     );
-
-    const eventTimestamp = new Date(Date.now() - 60_000).toISOString();
+    const initialChannelVersion = await scopedPool.query(
+      "SELECT id, multiplier FROM pricing_channel_versions WHERE channel = 'openai' AND available = true ORDER BY effective_from DESC LIMIT 1"
+    );
+    assert.equal(initialChannelVersion.rows[0].multiplier, "2");
+    const eventTimestamp = new Date(Date.now() + 60_000).toISOString();
     const record = {
       timestamp: eventTimestamp,
       provider: "openai",
@@ -326,14 +329,29 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     assert.equal(firstProcess.processed, 2);
 
     const pricedEvent = await scopedPool.query(
-      "SELECT price_version_id, cost_nanos, cost_currency, pricing_status FROM usage_events WHERE request_id = $1",
+      "SELECT price_version_id, channel_version_id, price_tier_index, resolved_service_tier, pricing_policy_version, cost_breakdown, cost_nanos, cost_currency, pricing_status FROM usage_events WHERE request_id = $1",
       ["phase1-request-001"]
     );
     assert.ok(pricedEvent.rows[0].price_version_id);
-    assert.equal(Number(pricedEvent.rows[0].cost_nanos), 140000);
+    assert.equal(Number(pricedEvent.rows[0].cost_nanos), 280000);
     assert.equal(pricedEvent.rows[0].cost_currency, "USD");
     assert.equal(pricedEvent.rows[0].pricing_status, "priced");
     assert.equal(Number(pricedEvent.rows[0].price_version_id), Number(initialPrice.rows[0].price_version_id));
+    assert.equal(Number(pricedEvent.rows[0].channel_version_id), Number(initialChannelVersion.rows[0].id));
+    assert.equal(pricedEvent.rows[0].pricing_policy_version, 1);
+    assert.equal(pricedEvent.rows[0].cost_breakdown.channel_multiplier, "2");
+    await assert.rejects(
+      scopedPool.query("UPDATE usage_events SET pricing_status = 'unpriced' WHERE request_id = $1", ["phase1-request-001"]),
+      /priced usage evidence is immutable/
+    );
+    await assert.rejects(
+      scopedPool.query("UPDATE model_price_versions SET input_price_per_1m = 99 WHERE id = $1", [initialPrice.rows[0].price_version_id]),
+      /model price versions are immutable/
+    );
+    await assert.rejects(
+      scopedPool.query("UPDATE pricing_channel_versions SET multiplier = 99 WHERE id = $1", [initialChannelVersion.rows[0].id]),
+      /pricing channel versions are immutable/
+    );
     await scopedPool.query(
       "UPDATE usage_events SET cache_creation_tokens = 5 WHERE request_id IN ($1, $2)",
       ["phase1-request-001", "phase1-request-002"]
@@ -350,7 +368,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     await scopedPool.query(
       `INSERT INTO model_prices (model, input_price_per_1m, cached_input_price_per_1m, output_price_per_1m)
        VALUES ('gpt-test', 1, 0.5, 2)
-       ON CONFLICT (model) DO UPDATE SET
+       ON CONFLICT (model, provider, service_tier) DO UPDATE SET
          input_price_per_1m = EXCLUDED.input_price_per_1m,
          cached_input_price_per_1m = EXCLUDED.cached_input_price_per_1m,
          output_price_per_1m = EXCLUDED.output_price_per_1m`
@@ -363,7 +381,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     await scopedPool.query(
       `INSERT INTO model_prices (model, input_price_per_1m, cached_input_price_per_1m, output_price_per_1m)
        VALUES ('gpt-test', 1.5, 0.5, 2)
-       ON CONFLICT (model) DO UPDATE SET
+       ON CONFLICT (model, provider, service_tier) DO UPDATE SET
          input_price_per_1m = EXCLUDED.input_price_per_1m,
          cached_input_price_per_1m = EXCLUDED.cached_input_price_per_1m,
          output_price_per_1m = EXCLUDED.output_price_per_1m`
@@ -372,7 +390,14 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
       "SELECT count(*) AS versions, count(*) FILTER (WHERE valid_to IS NOT NULL) AS closed_versions FROM model_price_versions WHERE model = 'gpt-test'"
     );
     assert.equal(Number(priceHistory.rows[0].versions), 2);
-    assert.equal(Number(priceHistory.rows[0].closed_versions), 1);
+    assert.equal(Number(priceHistory.rows[0].closed_versions), 0, "price versions are append-only and never rewritten");
+
+    await scopedPool.query("UPDATE pricing_channels SET multiplier = 3 WHERE channel = 'openai'");
+    const channelVersions = await scopedPool.query(
+      "SELECT id, multiplier FROM pricing_channel_versions WHERE channel = 'openai' ORDER BY effective_from, id"
+    );
+    assert.equal(channelVersions.rowCount, 2);
+    assert.deepEqual(channelVersions.rows.map((row) => row.multiplier), ["2", "3"]);
 
     const laterRecord = {
       ...record,
@@ -397,17 +422,19 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     });
     assert.equal(laterProcess.processed, 1);
     const laterPricedEvent = await scopedPool.query(
-      "SELECT price_version_id, cost_nanos FROM usage_events WHERE request_id = $1",
+      "SELECT price_version_id, channel_version_id, cost_nanos, cost_breakdown FROM usage_events WHERE request_id = $1",
       ["phase1-request-after-price-change"]
     );
     assert.notEqual(Number(laterPricedEvent.rows[0].price_version_id), Number(initialPrice.rows[0].price_version_id));
-    assert.equal(Number(laterPricedEvent.rows[0].cost_nanos), 180000);
+    assert.notEqual(Number(laterPricedEvent.rows[0].channel_version_id), Number(initialChannelVersion.rows[0].id));
+    assert.equal(Number(laterPricedEvent.rows[0].cost_nanos), 540000);
+    assert.equal(laterPricedEvent.rows[0].cost_breakdown.channel_multiplier, "3");
 
     await scopedPool.query("DELETE FROM model_prices WHERE model = 'gpt-test'");
     const deletedPriceHistory = await scopedPool.query(
-      "SELECT count(*) FILTER (WHERE valid_to IS NULL) AS open_versions FROM model_price_versions WHERE model = 'gpt-test'"
+      "SELECT available FROM model_price_versions WHERE model = 'gpt-test' ORDER BY valid_from DESC, id DESC LIMIT 1"
     );
-    assert.equal(Number(deletedPriceHistory.rows[0].open_versions), 0);
+    assert.equal(deletedPriceHistory.rows[0].available, false, "deleting a price must append an unavailable version");
 
     const firstCounts = await scopedPool.query(
       "SELECT (SELECT count(*) FROM usage_events) AS events, (SELECT count(*) FROM usage_event_identity) AS identities, (SELECT count(*) FROM usage_inbox WHERE status = 'processed') AS processed"

@@ -23,9 +23,18 @@ export const modelPriceVersions = pgTable(
     model: text("model").notNull(),
     provider: text("provider"),
     serviceTier: text("service_tier"),
-    inputPricePer1M: numeric("input_price_per_1m", { precision: 20, scale: 10 }).notNull(),
-    cachedInputPricePer1M: numeric("cached_input_price_per_1m", { precision: 20, scale: 10 }).default("0").notNull(),
-    outputPricePer1M: numeric("output_price_per_1m", { precision: 20, scale: 10 }).notNull(),
+    inputPricePer1M: numeric("input_price_per_1m", { precision: 30, scale: 12 }).notNull(),
+    cachedInputPricePer1M: numeric("cached_input_price_per_1m", { precision: 30, scale: 12 }).default("0").notNull(),
+    outputPricePer1M: numeric("output_price_per_1m", { precision: 30, scale: 12 }).notNull(),
+    cacheWritePricePer1M: numeric("cache_write_price_per_1m", { precision: 30, scale: 12 }).default("0").notNull(),
+    priceMultiplier: numeric("price_multiplier", { precision: 30, scale: 12 }).default("1").notNull(),
+    tiers: jsonb("tiers").notNull().default(sql`'[]'::jsonb`),
+    upstreamProviderId: text("upstream_provider_id"),
+    upstreamModelId: text("upstream_model_id"),
+    matchKind: text("match_kind"),
+    mode: text("mode").notNull().default("custom"),
+    available: boolean("available").notNull().default(true),
+    sourceSnapshotSha: text("source_snapshot_sha"),
     currency: text("currency").notNull().default("USD"),
     source: text("source").notNull().default("manual"),
     sourceVersion: text("source_version"),
@@ -42,19 +51,42 @@ export const modelPriceVersions = pgTable(
       sql`coalesce(${table.serviceTier}, '')`,
       table.validFrom
     ),
-    validRangeCheck: check("model_price_versions_valid_range_check", sql`${table.validTo} IS NULL OR ${table.validTo} > ${table.validFrom}`)
+    validRangeCheck: check("model_price_versions_valid_range_check", sql`${table.validTo} IS NULL OR ${table.validTo} > ${table.validFrom}`),
+    modeCheck: check("model_price_versions_mode_check", sql`${table.mode} IN ('auto', 'linked', 'custom')`)
   })
 );
 
-export const modelPrices = pgTable("model_prices", {
-  id: serial("id").primaryKey(),
-  model: text("model").notNull().unique(),
-  inputPricePer1M: numeric("input_price_per_1m", { precision: 10, scale: 4 }).notNull(),
-  cachedInputPricePer1M: numeric("cached_input_price_per_1m", { precision: 10, scale: 4 }).default("0").notNull(),
-  outputPricePer1M: numeric("output_price_per_1m", { precision: 10, scale: 4 }).notNull(),
-  priceVersionId: bigint("price_version_id", { mode: "number" }).references(() => modelPriceVersions.id, { onDelete: "set null" }),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull()
-});
+export const modelPrices = pgTable(
+  "model_prices",
+  {
+    id: serial("id").primaryKey(),
+    model: text("model").notNull(),
+    provider: text("provider").notNull().default(""),
+    serviceTier: text("service_tier").notNull().default(""),
+    inputPricePer1M: numeric("input_price_per_1m", { precision: 30, scale: 12 }).notNull(),
+    cachedInputPricePer1M: numeric("cached_input_price_per_1m", { precision: 30, scale: 12 }).default("0").notNull(),
+    outputPricePer1M: numeric("output_price_per_1m", { precision: 30, scale: 12 }).notNull(),
+    cacheWritePricePer1M: numeric("cache_write_price_per_1m", { precision: 30, scale: 12 }).default("0").notNull(),
+    priceMultiplier: numeric("price_multiplier", { precision: 30, scale: 12 }).default("1").notNull(),
+    tiers: jsonb("tiers").notNull().default(sql`'[]'::jsonb`),
+    source: text("source").notNull().default("manual"),
+    sourceVersion: text("source_version"),
+    upstreamProviderId: text("upstream_provider_id"),
+    upstreamModelId: text("upstream_model_id"),
+    matchKind: text("match_kind"),
+    mode: text("mode").notNull().default("custom"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    available: boolean("available").notNull().default(true),
+    createdBy: text("created_by"),
+    priceVersionId: bigint("price_version_id", { mode: "number" }).references(() => modelPriceVersions.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull()
+  },
+  (table) => ({
+    scopeUnique: uniqueIndex("model_prices_model_provider_tier_unique_idx").on(table.model, table.provider, table.serviceTier),
+    modeSourceIdx: index("model_prices_mode_source_idx").on(table.mode, table.source, table.available)
+  })
+);
 
 export const usageRecords = pgTable(
   "usage_records",
@@ -255,6 +287,11 @@ export const usageEvents = pgTable(
     costNanos: bigint("cost_nanos", { mode: "number" }),
     costCurrency: text("cost_currency").notNull().default("USD"),
     pricingStatus: text("pricing_status").notNull().default("unpriced"),
+    channelVersionId: bigint("channel_version_id", { mode: "number" }).references(() => pricingChannelVersions.id, { onDelete: "set null" }),
+    priceTierIndex: integer("price_tier_index"),
+    resolvedServiceTier: text("resolved_service_tier"),
+    pricingPolicyVersion: integer("pricing_policy_version").notNull().default(1),
+    costBreakdown: jsonb("cost_breakdown"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull()  },
   (table) => ({
     pk: primaryKey({ columns: [table.occurredAt, table.eventId], name: "usage_events_pkey" }),
@@ -451,5 +488,110 @@ export const usageRollupsDaily = pgTable(
   },
   (table) => ({
     pk: primaryKey({ columns: [table.bucketStart, table.timezone, table.provider, table.model, table.source, table.apiGroupKey, table.apiKeyMask, table.serviceTier, table.costCurrency], name: "usage_rollups_daily_pkey" })
+  })
+);
+
+export const pricingUpstreamCatalog = pgTable(
+  "pricing_upstream_catalog",
+  {
+    source: text("source").notNull(),
+    providerId: text("provider_id").notNull(),
+    modelId: text("model_id").notNull(),
+    name: text("name").notNull().default(""),
+    canonicalId: text("canonical_id"),
+    contextLength: bigint("context_length", { mode: "number" }),
+    inputPricePer1M: numeric("input_price_per_1m", { precision: 30, scale: 12 }),
+    outputPricePer1M: numeric("output_price_per_1m", { precision: 30, scale: 12 }),
+    cacheReadPricePer1M: numeric("cache_read_price_per_1m", { precision: 30, scale: 12 }),
+    cacheWritePricePer1M: numeric("cache_write_price_per_1m", { precision: 30, scale: 12 }),
+    tiers: jsonb("tiers").notNull().default(sql`'[]'::jsonb`),
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    sourceVersion: text("source_version"),
+    snapshotSha: text("snapshot_sha").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).defaultNow().notNull()
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.source, table.providerId, table.modelId], name: "pricing_upstream_catalog_pkey" }),
+    modelIdx: index("pricing_upstream_catalog_model_idx").on(table.source, table.modelId),
+    providerIdx: index("pricing_upstream_catalog_provider_idx").on(table.source, table.providerId)
+  })
+);
+
+export const pricingCatalogSnapshots = pgTable(
+  "pricing_catalog_snapshots",
+  {
+    id: bigint("id", { mode: "number" }).generatedAlwaysAsIdentity().primaryKey(),
+    source: text("source").notNull(),
+    snapshotSha: text("snapshot_sha").notNull(),
+    sourceVersion: text("source_version"),
+    etag: text("etag"),
+    lastModified: text("last_modified"),
+    status: text("status").notNull(),
+    providerCount: integer("provider_count").notNull().default(0),
+    modelCount: integer("model_count").notNull().default(0),
+    matchedCount: integer("matched_count").notNull().default(0),
+    ambiguousCount: integer("ambiguous_count").notNull().default(0),
+    updatedPriceCount: integer("updated_price_count").notNull().default(0),
+    errorMessage: text("error_message"),
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).defaultNow().notNull()
+  },
+  (table) => ({
+    sourceTimeIdx: index("pricing_catalog_snapshots_source_time_idx").on(table.source, table.fetchedAt),
+    sourceSnapshotFetchedUnique: uniqueIndex("pricing_catalog_snapshots_source_snapshot_sha_fetched_at_key").on(table.source, table.snapshotSha, table.fetchedAt)
+  })
+);
+
+export const pricingSyncState = pgTable("pricing_sync_state", {
+  source: text("source").primaryKey(),
+  etag: text("etag"),
+  lastModified: text("last_modified"),
+  lastHash: text("last_hash"),
+  lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
+  lastError: text("last_error"),
+  autoSyncIntervalHours: integer("auto_sync_interval_hours").notNull().default(24),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull()
+});
+
+export const pricingModelLinks = pgTable(
+  "pricing_model_links",
+  {
+    model: text("model").notNull(),
+    provider: text("provider").notNull().default(""),
+    source: text("source").notNull().default("models.dev"),
+    upstreamProviderId: text("upstream_provider_id").notNull(),
+    upstreamModelId: text("upstream_model_id").notNull(),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull()
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.model, table.provider], name: "pricing_model_links_pkey" }),
+    upstreamIdx: index("pricing_model_links_upstream_idx").on(table.source, table.upstreamProviderId, table.upstreamModelId)
+  })
+);
+
+export const pricingChannels = pgTable("pricing_channels", {
+  channel: text("channel").primaryKey(),
+  multiplier: numeric("multiplier", { precision: 30, scale: 12 }).notNull(),
+  note: text("note").notNull().default(""),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  createdBy: text("created_by")
+});
+
+export const pricingChannelVersions = pgTable(
+  "pricing_channel_versions",
+  {
+    id: bigint("id", { mode: "number" }).generatedAlwaysAsIdentity().primaryKey(),
+    channel: text("channel").notNull(),
+    effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull(),
+    available: boolean("available").notNull().default(true),
+    multiplier: numeric("multiplier", { precision: 30, scale: 12 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull()
+  },
+  (table) => ({
+    lookupIdx: index("pricing_channel_versions_lookup_idx").on(table.channel, table.effectiveFrom),
+    channelEffectiveUnique: uniqueIndex("pricing_channel_versions_channel_effective_from_key").on(table.channel, table.effectiveFrom)
   })
 );

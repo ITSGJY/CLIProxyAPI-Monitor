@@ -1,6 +1,14 @@
 # CHANGELOG
 ## 2026-11-19
 
+- 启动 Pricing Center V1：完成现有价格链路审计，明确 models.dev 主价格源、OpenRouter 只读参考、Auto/Linked/Custom 模式及请求级不可变成本证据。
+- 新增 PostgreSQL 价格目录、同步状态、模型映射、渠道倍率版本及四桶价格扩展迁移（Phase 1）；保留 OMC 历史价格快照，不触碰历史 Usage 记录。
+- 完成 Phase 2：接入 models.dev 主价格目录和 OpenRouter 只读参考，保存 SHA256 / ETag / Last-Modified / 同步快照；仅允许精确 ID、唯一 Offering 或计价字段完全一致的 Offering 自动匹配，歧义项要求人工 Linked。
+- 完成 Phase 3：新增 BigInt 定点十进制 Quote Engine，按普通输入、输出、缓存读取、缓存写入四桶计价；加入模型 / 渠道倍率、Service Tier / Prompt 阈值 / IANA 时区 Tier 选择，并在 Inbox 事务内保存价格版本、渠道版本、成本及计算明细。
+- 完成 Phase 4：新增独立 \`/pricing\` 页面与价格、同步、关联、渠道倍率、试算 API；支持 Auto / Linked / Custom、四桶编辑、Tier JSON、自动同步间隔、源目录状态及价格 / 渠道历史。
+- 价格版本与已计价请求证据改为不可变追加式记录；缺失费率不再按零计费，超出 PostgreSQL bigint 范围或 Token 桶不一致时拒绝生成金额。
+- 新增 Pricing 单元与 PostgreSQL 17 回归覆盖；未执行 Phase 5 历史回算，未切换或停止生产 CPA Collector / RESP Subscription。
+
 - 完成 `/records` 请求事件分析工作台改造：支持自定义列、详情抽屉、高级筛选和 CSV/JSON 导出；新增 CPA 请求上下文专用字段及 PostgreSQL 迁移。
 - 修复迁移预检误将其他 schema 中的 `model_prices` 当作当前目标 schema 已迁移的问题，并增加 PostgreSQL 回归断言。
 

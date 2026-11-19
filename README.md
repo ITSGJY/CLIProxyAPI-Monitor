@@ -15,7 +15,8 @@
 - **Explore**：请求级 Token、模型 / Provider / Credential / Service Tier 分布、缓存趋势、Latency 和 TTFT。
 - **Records**：请求事件分析工作台，支持自定义列、请求详情与诊断、组合筛选、多字段排序、稳定游标分页及 CSV/JSON 导出。
 - **Collector**：CPA v8 原生 RESP Subscription、连接恢复、事件审计、Gap Tracking 和 PostgreSQL Durable Inbox。
-- **Processor / Rollup**：幂等事件归一化、版本化价格、历史成本快照、小时及每日聚合。
+- **Processor / Rollup**：幂等事件归一化、版本化价格、请求级成本快照、小时及每日聚合。
+- **Pricing Center**：独立的 \`/pricing\` 价格管理中心，支持 models.dev 自动目录、OpenRouter 只读参考、Auto/Linked/Custom、安全模型关联、四桶价格、Tier、模型与渠道倍率、不可变价格历史及同引擎成本试算。
 - **Historical import**：可审计的 OMC SQLite 历史记录导入，不修改 OMC 原始数据库。
 
 ## 部署与运行
@@ -26,7 +27,7 @@
 - Collector 默认关闭。生产配置使用 `COLLECTOR_ENABLED=true`、`COLLECTOR_MODE=subscribe`、`COLLECTOR_ALLOW_PULL_FALLBACK=false`，并显式启用两个生产目标开关。
 - FIFO `pull` 仅用于经过协调的单消费者兼容场景；不得与 OMC、Keeper 等订阅者同时使用。
 
-查看 [架构决策](docs/architecture.md)、[Phase 3 Collector](docs/phase3-collector.md)、[Phase 4 Processor / Pricing](docs/phase4-processor.md)、[Phase 6 历史导入](docs/phase6-legacy-import.md) 和 [Phase 7 部署验收](docs/phase7-runbook.md)。
+查看 [架构决策](docs/architecture.md)、[Phase 3 Collector](docs/phase3-collector.md)、[Phase 4 Processor / Pricing](docs/phase4-processor.md)、[Pricing Center V1](docs/pricing-center-v1.md)、[Phase 6 历史导入](docs/phase6-legacy-import.md) 和 [Phase 7 部署验收](docs/phase7-runbook.md)。
 
 持续集成、GHCR 多架构镜像发布、Oracle 生产部署和受限 SSH 机制见 [GitHub CI/CD 运维手册](docs/ci-cd.md)。
 

@@ -88,24 +88,27 @@ function getSSLOptions(): object | undefined {
   return { ca: pem, rejectUnauthorized: true };
 }
 
+let sharedPool: any;
+
 function createDb(): any {
   if (useNeon) {
     neonConfig.webSocketConstructor = WebSocket;
-    return neonDrizzle(new NeonPool({ connectionString }));
+    sharedPool = new NeonPool({ connectionString });
+    return neonDrizzle(sharedPool);
   }
   const sslOptions = getSSLOptions();
   const pgConnectionString = sslOptions
     ? stripPgSslParams(connectionString)
     : connectionString;
 
-  return pgDrizzle(
-    new PgPool({
-      connectionString: pgConnectionString,
-      ssl: sslOptions,
-      ...pgPoolConfig
-    })
-  );
+  sharedPool = new PgPool({
+    connectionString: pgConnectionString,
+    ssl: sslOptions,
+    ...pgPoolConfig
+  });
+  return pgDrizzle(sharedPool);
 }
 
 export const db: any = createDb();
+export const databasePool: any = sharedPool;
 

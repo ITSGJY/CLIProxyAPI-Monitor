@@ -2226,161 +2226,29 @@ export default function DashboardPage() {
           <Skeleton className="h-[500px] rounded-2xl" />
         </div>
       ) : (
-        <section className={`animate-card-float mt-8 rounded-2xl p-6 shadow-sm ring-1 ${darkMode ? "bg-slate-800/50 ring-slate-700" : "bg-white ring-slate-200"}`} style={{ animationDelay: '0.35s' }}>
-          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <section className={`animate-card-float mt-8 rounded-2xl p-6 shadow-sm ring-1 ${darkMode ? "bg-slate-800/50 ring-slate-700" : "bg-white ring-slate-200"}`} style={{ animationDelay: "0.35s" }}>
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className={`text-lg font-semibold ${darkMode ? "text-white" : "text-slate-900"}`}>模型价格配置</h2>
-              <p className={`text-xs ${darkMode ? "text-slate-400" : "text-slate-500"}`}>设置每百万 tokens 单价，费用计算将立即更新</p>
+              <h2 className={`text-lg font-semibold ${darkMode ? "text-white" : "text-slate-900"}`}>Pricing Center · 模型价格体系</h2>
+              <p className={`mt-1 text-xs ${darkMode ? "text-slate-400" : "text-slate-500"}`}>
+                统一管理四桶 Token 价格、模型与渠道倍率、Tier、价格版本及成本试算。
+              </p>
             </div>
-            <div className="flex w-full flex-col gap-4 md:w-3/5 md:flex-row md:items-center md:justify-end">
-              <div className="relative w-full md:max-w-[360px]">
-                <Search className={`absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 ${darkMode ? "text-slate-500" : "text-slate-400"}`} />
-                <input
-                  type="text"
-                  placeholder="搜索已配置价格的模型..."
-                  value={priceSearchQuery}
-                  onChange={(e) => setPriceSearchQuery(e.target.value)}
-                  className={`w-full rounded-lg border py-2 pl-10 pr-3 text-sm focus:border-indigo-500 focus:outline-none ${darkMode ? "border-slate-700 bg-slate-900 text-white placeholder-slate-500" : "border-slate-300 bg-white text-slate-900 placeholder-slate-400"}`}
-                  aria-label="搜索模型价格"
-                />
-                {priceSearchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setPriceSearchQuery("")}
-                    className={`absolute right-3 top-1/2 -translate-y-1/2 ${darkMode ? "text-slate-500 hover:text-slate-300" : "text-slate-400 hover:text-slate-600"}`}
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                )}
-              </div>
+            <div className="flex flex-wrap gap-2">
+              <a href="/pricing" className="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500">
+                打开 Pricing Center
+              </a>
               <button
                 onClick={syncModelPrices}
                 disabled={syncingPrices}
-                className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition ${
-                  syncingPrices
-                    ? darkMode
-                      ? "cursor-not-allowed border-slate-700 bg-slate-800 text-slate-500"
-                      : "cursor-not-allowed border-slate-300 bg-slate-200 text-slate-500"
-                    : "border-emerald-500/50 bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30"
-                }`}
-                title="从 models.dev 获取最新模型价格并更新到面板"
+                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition ${syncingPrices ? "cursor-not-allowed border-slate-700 bg-slate-800 text-slate-500" : "border-emerald-500/50 bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30"}`}
               >
                 <DollarSign className={`h-4 w-4 ${syncingPrices ? "animate-pulse" : ""}`} />
-                {syncingPrices ? "同步中..." : "更新价格"}
+                {syncingPrices ? "同步中..." : "同步 models.dev"}
               </button>
             </div>
           </div>
-
-          <div className="mt-6 grid gap-6 lg:grid-cols-5">
-          <form onSubmit={handleSubmit} className={`rounded-xl border p-5 lg:col-span-2 ${darkMode ? "border-slate-700 bg-slate-800/50" : "border-slate-200 bg-slate-50"}`}>
-            <div className="grid gap-6">
-              <label className={`text-sm font-medium ${darkMode ? "text-slate-300" : "text-slate-700"}`}>
-                模型名称
-                <ComboBox
-                  value={form.model}
-                  onChange={(val) => setForm((f) => ({ ...f, model: val }))}
-                  options={priceModelOptions}
-                  placeholder="gpt-4o（支持通配符如 gemini-2*）"
-                  darkMode={darkMode}
-                  className="mt-1 w-full"
-                />
-              </label>
-              <label className={`text-sm font-medium ${darkMode ? "text-slate-300" : "text-slate-700"}`}>
-                输入（$ / M tokens）
-                <input
-                  type="number"
-                  step="0.01"
-                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none ${darkMode ? "border-slate-700 bg-slate-900 text-white placeholder-slate-500" : "border-slate-300 bg-white text-slate-900 placeholder-slate-400"}`}
-                  placeholder="2.5"
-                  value={form.inputPricePer1M}
-                  onChange={(e) => setForm((f) => ({ ...f, inputPricePer1M: e.target.value }))}
-                />
-              </label>
-              <label className={`text-sm font-medium ${darkMode ? "text-slate-300" : "text-slate-700"}`}>
-                缓存输入（$ / M tokens）
-                <input
-                  type="number"
-                  step="0.01"
-                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none ${darkMode ? "border-slate-700 bg-slate-900 text-white placeholder-slate-500" : "border-slate-300 bg-white text-slate-900 placeholder-slate-400"}`}
-                  placeholder="0.5（可选，默认为 0）"
-                  value={form.cachedInputPricePer1M}
-                  onChange={(e) => setForm((f) => ({ ...f, cachedInputPricePer1M: e.target.value }))}
-                />
-              </label>
-              <label className={`text-sm font-medium ${darkMode ? "text-slate-300" : "text-slate-700"}`}>
-                输出（$ / M tokens）
-                <input
-                  type="number"
-                  step="0.01"
-                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none ${darkMode ? "border-slate-700 bg-slate-900 text-white placeholder-slate-500" : "border-slate-300 bg-white text-slate-900 placeholder-slate-400"}`}
-                  placeholder="10"
-                  value={form.outputPricePer1M}
-                  onChange={(e) => setForm((f) => ({ ...f, outputPricePer1M: e.target.value }))}
-                />
-              </label>
-              <button
-                type="submit"
-                disabled={saving}
-                className="inline-flex items-center justify-center rounded-lg bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition hover:bg-indigo-600 disabled:opacity-60"
-              >
-                <Save className="mr-2 h-4 w-4" />
-                {saving ? "保存中..." : "保存价格"}
-              </button>
-            </div>
-          </form>
-
-          <div className="lg:col-span-3">
-            <div className="scrollbar-slim grid max-h-[420px] gap-3 overflow-y-auto pr-1">
-              {filteredPrices.length ? filteredPrices.map((price) => (
-                <div key={price.model} className={`flex items-center justify-between rounded-xl border px-4 pt-3 pb-2.5 ${darkMode ? "border-slate-700 bg-slate-800/50" : "border-slate-200 bg-slate-50"}`}>
-                  <div>
-                    <p className={`text-base font-semibold ${darkMode ? "text-white" : "text-slate-900"}`}>{price.model}</p>
-                    <div className="mt-1.5 grid grid-cols-3 gap-2 text-sm leading-5">
-                      <span className={`inline-flex items-center justify-between rounded-full px-2 py-0 ${darkMode ? "bg-rose-500/15 text-rose-200" : "bg-rose-100 text-rose-700"}`} style={{ width: `${badgeWidths.input}px` }}>
-                        <span className="font-medium">输入</span>
-                        <span className="font-semibold tabular-nums">${price.inputPricePer1M}/M</span>
-                      </span>
-                      <span className={`inline-flex items-center justify-between rounded-full px-2 py-0 ${darkMode ? "bg-amber-500/15 text-amber-200" : "bg-amber-100 text-amber-700"}`} style={{ width: `${badgeWidths.cached}px` }}>
-                        <span className="font-medium">缓存</span>
-                        <span className="font-semibold tabular-nums">${price.cachedInputPricePer1M}/M</span>
-                      </span>
-                      <span className={`inline-flex items-center justify-between rounded-full px-2 py-0 ${darkMode ? "bg-emerald-500/15 text-emerald-200" : "bg-emerald-100 text-emerald-700"}`} style={{ width: `${badgeWidths.output}px` }}>
-                        <span className="font-medium">输出</span>
-                        <span className="font-semibold tabular-nums">${price.outputPricePer1M}/M</span>
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => openEditModal(price)}
-                      className={`rounded-lg p-2 transition ${darkMode ? "text-slate-400 hover:bg-slate-700 hover:text-white" : "text-slate-500 hover:bg-slate-200 hover:text-slate-900"}`}
-                      title="编辑"
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPendingDelete(price.model)}
-                      className={`rounded-lg p-2 transition ${darkMode ? "text-red-400 hover:bg-red-900/50 hover:text-red-300" : "text-red-500 hover:bg-red-100 hover:text-red-700"}`}
-                      title="删除"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-              )) : (
-                <div className={`flex flex-col items-center justify-center rounded-xl border border-dashed py-8 text-center ${darkMode ? "border-slate-700 bg-slate-800/30" : "border-slate-300 bg-slate-50"}`}>
-                  <p className="text-base text-slate-400">
-                    {priceSearchQuery ? "未找到匹配的模型" : "暂无已配置价格"}
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-        </section>
-      )}
+        </section>      )}
 
       {/* 编辑价格模态框 */}
       <Modal

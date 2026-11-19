@@ -71,6 +71,13 @@
       "when": 1795110000000,
       "tag": "0009_request_event_context",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795120000000,
+      "tag": "0010_pricing_center",
+      "breakpoints": true
     }
   ]
 }
