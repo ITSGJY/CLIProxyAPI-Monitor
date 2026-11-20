@@ -80,6 +80,9 @@ test("database session intervals expose closed/future/gap windows and safe empty
   await store.acquire();
   const session = await store.startSession();
   await store.subscribed(session);
+  await store.confirmCoverage(session, new Date(center - 120000)); // stale app-clock timestamp must not hold back the database watermark
+  const clockWatermark = (await pool.query("SELECT subscribed_at,coverage_through FROM cpa_error_subscription_sessions WHERE id=$1", [session])).rows[0];
+  assert.ok(new Date(clockWatermark.coverage_through) > new Date(clockWatermark.subscribed_at), "coverage advances using the PostgreSQL clock despite application clock skew");
   await pool.query("UPDATE cpa_error_subscription_sessions SET subscribed_at=$2,coverage_through=$3 WHERE id=$1", [session, new Date(center - 120000), new Date(now)]);
   let result = await getCredentialErrors(pool, record, { now });
   assert.equal(result.coverage.status, "complete");

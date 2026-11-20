@@ -4,11 +4,11 @@
 
 ## 固定来源契约
 
-已读取以下公开标签的源码，未读取线上 CPA/OMC 配置或数据库：
+已读取以下公开标签源码，并对线上 OMC 数据库使用 SQLite Backup API 创建一致性只读快照；未输出任何密钥或原始错误正文：
 
 - CPA **v8.0.56**，提交 `585f97deac9aa57c700301221fb1a7085e1827cc`：[error_events.go](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.56/sdk/cliproxy/auth/error_events.go)、[redis_queue_protocol.go](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.56/internal/api/redis_queue_protocol.go)。`AUTH` 后单独 `SUBSCRIBE errors`，确认帧为 `subscribe/errors/1`。订阅期间支持 `PING` / `UNSUBSCRIBE`。
 - OMC **v0.4.2**，提交 `0a06f85a186cf44480b3e18f8fc425a5dfd90035`：[decode.go](https://github.com/WizisCool/oh-my-cpa/blob/v0.4.2/internal/usage/decode.go)、[002_usage_ingest.sql](https://github.com/WizisCool/oh-my-cpa/blob/v0.4.2/migrations/002_usage_ingest.sql)、[059_model_cooldowns.sql](https://github.com/WizisCool/oh-my-cpa/blob/v0.4.2/migrations/059_model_cooldowns.sql)。错误行没有可用于精确请求归因的 Request ID。
-
+- 生产快照实际来自 OMC **v0.4.8**（commit `a920ac22`），SQLite `schema_migrations` 版本 **71**；`error_events` 共 **156** 行，所有 importer 必需列均存在。只读快照：`/var/backups/cliproxyapi-monitor/omc-phase55-errors-20261120.sqlite`，SHA256 `f6568b078042fe37b29282ef655e6a22a07505f7bd3e8618edab2d90a3a5a9da`。待 Monitor 生产迁移完成后导入这 156 条历史错误。
 CPA 的 `timestamp/provider/model/auth_index/status_code/body/code/retryable` 和 `auth_status` 白名单被规范化；凭据及模型的 status/status_message/unavailable/next_retry_after/quota 均保留，凭据另含 disabled。quota 保存 exceeded/reason/next_recover_at/backoff_level。`auth_id` 仅在内存中用于移除正文中的精确匹配，随后丢弃。
 
 与 OMC 一致：存在模型状态且凭据 quota.reason 为 `quota` 时，`auth_quota_aggregate=true`；reason 为 `credential_quota`、两级 exceeded 且模型重试/恢复时间均不晚于凭据最大重试/恢复时间时，`model_quota_inherited=true`。缺失字段保留 unknown/null，不伪造零配额或恢复时间；OMC migration 059 缺列时新增布尔值默认 false、model_backoff_level 默认 0，其余可选字段为 null。旧 OMC `auth_status` 只有状态消息，无法补造 CPA 原始状态枚举或模型消息。
@@ -55,7 +55,7 @@ flowchart LR
 - 每次抢占递增 epoch，所有写入与续租在同一事务内锁定并校验 owner/epoch/未过期 lease。失去租约的旧 worker 无法写事件、更新 session 或释放新 worker。
 - 默认 lease 45 秒，5 秒续租。RESP 重连使用 500ms、1s、2s…最大 30s 指数退避；有效 PONG/数据库水位确认后重置。认证/协议/持久化/畸形消息/背压错误均终止该 error session。数据库故障会结束该进程，Compose 的独立 restart 策略负责恢复；不影响 usage 进程。
 - 默认最多 256 个待持久化消息、1MiB 待处理正文；半满暂停 socket，四分之一以下恢复，硬上限断开并产生未覆盖区间。底层单 RESP bulk 上限 64KiB。接受的消息串行持久化；不会无限缓存，也不把原始错误放进日志或 dead letter。
-- `subscribed_at` 仅在校验 SUBSCRIBE 确认后写入；PONG 后的水位更新串行排在该 socket 先前收到的消息提交之后。只有成功探测、成功持久化且仍持有 lease 的时间段才进入覆盖计算。PONG 是连接探测，**不是消息 ACK**，不能证明 CPA 内部没有丢弃/延迟消息。
+- `subscribed_at` 仅在校验 SUBSCRIBE 确认后写入；PONG 后的水位更新串行排在该 socket 先前收到的消息提交之后，并统一使用 PostgreSQL `clock_timestamp()`，不依赖应用时钟。只有成功探测、成功持久化且仍持有 lease 的时间段才进入覆盖计算。PONG 是连接探测，**不是消息 ACK**，不能证明 CPA 内部没有丢弃/延迟消息。
 - 异常关闭和进程崩溃只保留最后确认水位，重启关闭未结束 session。两段水位之间、启动前、停机后都属于未覆盖时间；不靠“最后一条错误的时间”猜测覆盖。
 - SIGINT/SIGTERM 取消重连、发送 UNSUBSCRIBE，最多等待 10 秒排空已经接受的消息，再关闭 session/释放 lease。进程额外有 25 秒强制退出上限，Compose grace 为 30 秒；超时/崩溃依赖 lease 失效，历史尾部仍保持未知。
 
