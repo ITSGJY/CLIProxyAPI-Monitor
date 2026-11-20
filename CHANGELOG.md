@@ -1,4 +1,13 @@
 # CHANGELOG
+## 2026-11-20
+
+- 完成 Phase 5.5 凭据错误事件：对照 CPA v8.0.56 / OMC v0.4.2 固定源码契约，新增独立 `SUBSCRIBE errors` 连接、进程和可选 Compose 服务；保持既有 Usage、Inbox、Pricing、Records 列表及四标签详情结构不变。
+- 新增 PostgreSQL 迁移 `0011`、Drizzle 错误事实/采集状态/订阅会话/历史导入审计与成员表，支持实例范围幂等、lease epoch fencing、独立心跳、限流背压、指数退避重连、健康检查和显式覆盖缺口。
+- 错误事件仅保留白名单与脱敏正文/状态；不保存原始 payload 或明文 auth_id，不在日志/API/UI 中输出敏感错误内容；完整保存凭据和模型配额、冷却、重试、恢复及退避证据。
+- Records 诊断增加凭据关联错误：同实例、非空 auth_index、前后 120 秒闭区间、按绝对时间差稳定排序并限制 20 条；展示有符号时间差、Provider/模型匹配和覆盖状态，明确不构成因果证明。事件与覆盖使用同一数据库快照，防止读竞争误报完整空结果。
+- 扩展只读 OMC SQLite 导出与 Node `--errors-only` 导入，兼容模型冷却迁移前后的可选列；保留 auth_index/原始时间、固定 legacy 实例、验证快照 SHA256 和最终计数、拒绝变更的源行身份、支持重复导入与中断审计；缺少 error_events 明确记为 unavailable。
+- 新增单元、PostgreSQL 17、旧/新 SQLite 导入、边界与隐私回归测试及 CI 架构 guard；扩展浏览器验收覆盖错误正文转义，补充 Phase 5.5 架构与运维手册。仅操作隔离测试目标，未提交、推送或部署，真实 CPA 端到端验收仍待完成。
+
 ## 2026-11-19
 
 - 启动 Pricing Center V1：完成现有价格链路审计，明确 models.dev 主价格源、OpenRouter 只读参考、Auto/Linked/Custom 模式及请求级不可变成本证据。

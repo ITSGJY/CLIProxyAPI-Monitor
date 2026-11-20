@@ -2,6 +2,7 @@
 """Read-only, allowlisted exporter for an Oh My CPA SQLite snapshot."""
 import argparse
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -30,10 +31,78 @@ EXPORT_COLUMNS = [
     "token_accounting", "structured_usage"
 ]
 
+ERROR_REQUIRED = {"id", "instance_id", "timestamp_ms", "created_at_ms", "auth_index"}
+ERROR_COLUMNS = ["id", "instance_id", "event_key", "timestamp_ms", "created_at_ms", "auth_index",
+                 "provider", "model", "status_code", "code", "body", "retryable", "auth_status",
+                 "auth_disabled", "auth_unavailable", "quota_exceeded", "quota_reason",
+                 "next_retry_after_ms", "next_recover_at_ms", "backoff_level", "cooldown_model",
+                 "model_quota_exceeded", "model_quota_reason", "model_next_retry_after_ms",
+                 "model_next_recover_at_ms", "model_backoff_level", "auth_quota_aggregate", "model_quota_inherited"]
 
-def connect(path):
+
+def error_manifest(conn):
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(error_events)")}
+    if not columns:
+        return {"available": False, "expected_count": None, "reason": "source_error_table_unavailable"}
+    if ERROR_REQUIRED - columns:
+        raise RuntimeError("Unsupported OMC error_events schema")
+    if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+        raise RuntimeError("SQLite quick_check failed")
+    if conn.execute("SELECT count(*) FROM error_events WHERE instance_id IS NULL OR instance_id <> 'default'").fetchone()[0]:
+        raise RuntimeError("Unexpected OMC error source instance")
+    stats = conn.execute("SELECT count(*) AS expected_count, min(timestamp_ms) AS min_timestamp_ms, max(timestamp_ms) AS max_timestamp_ms FROM error_events").fetchone()
+    has_migrations = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").fetchone()
+    version = conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] if has_migrations else conn.execute("PRAGMA user_version").fetchone()[0]
+    return {"available": True, **dict(stats), "source_schema_version": version,
+            "missing_optional_columns": sorted(set(ERROR_COLUMNS) - columns)}
+
+
+def redact_error_text(value, auth_id):
+    if not isinstance(value, str):
+        return value
+    if auth_id:
+        value = value.replace(auth_id, "[redacted]")
+    value = re.sub(r"-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)", "[redacted]", value, flags=re.I)
+    value = re.sub(r"\b(?:Bearer|Basic)\s+[^\s,;\"'<>]+", "[redacted]", value, flags=re.I)
+    value = re.sub(r"\b(?:set-cookie|cookie|authorization)\s*:\s*[^\r\n]+", "[redacted-header]", value, flags=re.I)
+    value = re.sub(r"((?:full[_-]?name|user[_-]?name|first[_-]?name|last[_-]?name|address|姓名|地址|电话|手机号)\s*[:=：]\s*)[^\r\n,;}]+", r"\1[redacted]", value, flags=re.I)
+    value = re.sub(r'''(["']?(?:[\w-]*(?:token|secret|password|api[_-]?key)|authorization|cookie|auth[_-]?id|email|phone|address|full[_-]?name|user[_-]?name|first[_-]?name|last[_-]?name)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s,;}]+)''', r"\1[redacted]", value, flags=re.I)
+    value = re.sub(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "[redacted]", value, flags=re.I)
+    value = re.sub(r'''https?://[^\s<>"']+''', "[redacted-url]", value, flags=re.I)
+    value = re.sub(r"\b(?:sk-|gh[pousr]_|github_pat_|AIza|AKIA)[A-Za-z0-9_-]+", "[redacted]", value)
+    value = re.sub(r"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?", "[redacted]", value)
+    value = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[redacted-ip]", value)
+    value = re.sub(r"\b(?:[a-f\d]{1,4}:){2,}[a-f\d:]+\b", "[redacted-ip]", value, flags=re.I)
+    value = re.sub(r"(?<!\w)\+?\d[\d ()-]{8,}\d(?!\w)", "[redacted-number]", value)
+    value = re.sub(r"\b[A-Za-z0-9_+/=]{24,}\b", "[redacted]", value)
+    value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", value)
+    return value.strip()[:4096]
+
+
+def export_errors(conn, after_id):
+    if not error_manifest(conn)["available"]:
+        raise RuntimeError("source_error_table_unavailable")
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(error_events)")}
+    expressions = ['"' + col + '"' if col in columns else 'NULL AS "' + col + '"' for col in ERROR_COLUMNS]
+    # Read auth_id only to remove exact occurrences from free text. Never export it.
+    expressions.append('auth_id AS redaction_identity' if 'auth_id' in columns else 'NULL AS redaction_identity')
+    for row in conn.execute('SELECT ' + ','.join(expressions) + ' FROM error_events WHERE id > ? ORDER BY id', (after_id,)):
+        value = dict(row)
+        auth_id = value.pop('redaction_identity')
+        for key in ['event_key', 'provider', 'model', 'code', 'body', 'auth_status', 'quota_reason', 'cooldown_model', 'model_quota_reason']:
+            value[key] = redact_error_text(value[key], auth_id)
+        # Auth index is needed for correlation; reject unexpected PII instead of changing its identity.
+        auth_index = value['auth_index']
+        if not isinstance(auth_index, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,256}', auth_index.strip()) or re.match(r'^(sk-|eyJ|ghp_|github_pat_)', auth_index.strip()):
+            value['auth_index'] = None
+        sys.stdout.write(json.dumps(value, separators=(',', ':'), ensure_ascii=False) + '\n')
+
+
+def connect(path, immutable=False):
     resolved = Path(path).resolve(strict=True)
-    uri = "file:" + str(resolved) + "?mode=ro"
+    if immutable and any(Path(str(resolved) + suffix).exists() for suffix in ("-wal", "-shm", "-journal")):
+        raise RuntimeError("Error export requires a standalone SQLite backup snapshot")
+    uri = resolved.as_uri() + "?mode=ro" + ("&immutable=1" if immutable else "")
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA query_only = ON")
@@ -156,13 +225,17 @@ def export_price_versions(conn):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=["manifest", "export", "price-versions"])
+    parser.add_argument("mode", choices=["manifest", "export", "price-versions", "errors-manifest", "errors"])
     parser.add_argument("--source", required=True)
     parser.add_argument("--after-id", type=int, default=0)
     args = parser.parse_args()
-    conn = connect(args.source)
+    conn = connect(args.source, immutable=args.mode in ("errors", "errors-manifest"))
     try:
-        if args.mode == "manifest":
+        if args.mode == "errors-manifest":
+            print(json.dumps(error_manifest(conn), separators=(",", ":")))
+        elif args.mode == "errors":
+            export_errors(conn, args.after_id)
+        elif args.mode == "manifest":
             print(json.dumps(manifest(conn, args.source), separators=(",", ":")))
         elif args.mode == "export":
             export(conn, args.after_id)

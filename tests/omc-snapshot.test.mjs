@@ -41,3 +41,30 @@ for path in sys.argv[1:]:
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("OMC snapshot error cutoff is independent of usage cutoff and never edits the source", () => {
+  const directory = mkdtempSync(join(tmpdir(), "monitor-error-cutoff-"));
+  const source = join(directory, "source.sqlite"), destination = join(directory, "snapshot.sqlite");
+  try {
+    const setup = spawnSync("python3", ["-c", `
+import sqlite3,sys
+c=sqlite3.connect(sys.argv[1])
+for table in ('usage_events','error_events'):
+ c.execute('CREATE TABLE '+table+' (id INTEGER PRIMARY KEY,timestamp_ms INTEGER,created_at_ms INTEGER)')
+ c.executemany('INSERT INTO '+table+' VALUES (?,?,?)',[(1,1000,9999),(2,2000,9999),(3,3000,9999)])
+c.commit();c.close()
+`, source], { encoding: "utf8" });
+    assert.equal(setup.status, 0, setup.stderr);
+    const result = spawnSync("python3", [snapshotScript, "--source", source, "--destination", destination, "--event-before-ms", "1000", "--error-before-ms", "2000"], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    const verify = spawnSync("python3", ["-c", `
+import sqlite3,sys
+for path in sys.argv[1:]:
+ c=sqlite3.connect('file:'+path+'?mode=ro',uri=True)
+ print(c.execute('SELECT count(*) FROM usage_events').fetchone()[0],c.execute('SELECT count(*) FROM error_events').fetchone()[0])
+ c.close()
+`, source, destination], { encoding: "utf8" });
+    assert.equal(verify.status, 0);
+    assert.equal(verify.stdout.trim(), "3 3\n1 2");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});

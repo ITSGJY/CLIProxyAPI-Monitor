@@ -1,5 +1,6 @@
 import * as DrizzleOrm from "drizzle-orm";
-import { db } from "@/lib/db/client";
+import { db, databasePool } from "@/lib/db/client";
+import { getCredentialErrors } from "@/lib/cpa-errors/query.mjs";
 import { usageEvents, authFileMappings } from "@/lib/db/schema";
 import { dashboardWhere, getDashboardFilterOptions, type DashboardFilters } from "./dashboard-common";
 
@@ -205,6 +206,7 @@ export async function getUsageRecordDetails(eventId: number) {
     ...listSelection,
     ingestedAt: usageEvents.ingestedAt,
     sourceInstanceId: usageEvents.sourceInstanceId,
+    authIndex: usageEvents.authIndex,
     originSystem: usageEvents.originSystem,
     sourceTransport: usageEvents.sourceTransport,
     sourceNativeId: usageEvents.sourceNativeId,
@@ -245,7 +247,12 @@ export async function getUsageRecordDetails(eventId: number) {
     .leftJoin(authFileMappings, eq(usageEvents.authIndex, authFileMappings.authId))
     .where(eq(usageEvents.eventId, eventId))
     .limit(1);
-  return rows.length ? toRecordItem(rows[0]) : null;
+  if (!rows.length) return null;
+  const evidence = await getCredentialErrors(databasePool, rows[0], {
+    configured: process.env.ERROR_COLLECTOR_ENABLED === undefined ? undefined : process.env.ERROR_COLLECTOR_ENABLED === "true"
+  });
+  const { authIndex: _authIndex, ...record } = rows[0];
+  return { ...toRecordItem(record), credentialErrors: evidence };
 }
 
 export async function getUsageRecordsForExport(input: DashboardFilters, limit = 20000) {

@@ -18,6 +18,7 @@
 - **Processor / Rollup**：幂等事件归一化、版本化价格、请求级成本快照、小时及每日聚合。
 - **Pricing Center**：独立的 \`/pricing\` 价格管理中心，支持 models.dev 自动目录、OpenRouter 只读参考、Auto/Linked/Custom、安全模型关联、四桶价格、Tier、模型与渠道倍率、不可变价格历史及同引擎成本试算。
 - **Historical import**：可审计的 OMC SQLite 历史记录导入，不修改 OMC 原始数据库。
+- **Credential Error Events**：独立 errors RESP 采集进程与覆盖审计，在 Records 诊断中按实例、凭据和 ±2 分钟窗口展示脱敏错误证据；另支持 OMC errors-only 历史导入。默认关闭，参见 [Phase 5.5 运维手册](docs/phase5.5-cpa-error-events.md)。
 
 ## 部署与运行
 

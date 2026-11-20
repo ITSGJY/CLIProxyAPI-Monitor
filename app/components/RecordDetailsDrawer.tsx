@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ArrowRight, AlertTriangle, CheckCircle2, ChevronRight, Clock3, Copy, Database, Download, Gauge, LoaderCircle, Network, X, Zap } from "lucide-react";
+import type { CredentialErrorEvidence, ErrorCoverageStatus } from "@/lib/types";
 
 type RecordDetails = {
+  credentialErrors?: CredentialErrorEvidence;
   id: number;
   occurredAt: string;
   ingestedAt?: string | null;
@@ -88,6 +90,65 @@ type Props = {
 };
 
 type DetailTab = "overview" | "usage" | "diagnostics" | "raw";
+
+const errorCoverageLabels: Record<ErrorCoverageStatus, string> = {
+  disabled: "采集已关闭", not_configured: "未配置错误采集", connecting: "正在连接",
+  disconnected: "连接已断开", degraded: "采集异常", collecting: "窗口尚未结束 · 采集中",
+  complete: "窗口覆盖完整", partial: "窗口覆盖不完整", historical_import: "历史快照导入",
+  not_correlatable: "缺少关联凭据或时间", query_failed: "错误证据查询失败"
+};
+
+function CredentialErrors({ evidence }: { evidence?: CredentialErrorEvidence }) {
+  const coverage = evidence?.coverage;
+  const events = evidence?.events ?? [];
+  const windowMs = evidence?.window_ms ?? 120000;
+  const windowLabel = windowMs % 60000 === 0 ? `±${windowMs / 60000} 分钟` : `±${windowMs / 1000} 秒`;
+  return (
+    <Section title="凭据关联错误" description={`按同一 CPA 实例、同一凭据及请求时间前后 ${windowLabel} 关联，最多展示 20 条。仅供调查参考，不代表已证明的因果关系，也不是按 Request ID 精确匹配。`}>
+      <p className="text-sm text-slate-300">{errorCoverageLabels[coverage?.status ?? "query_failed"]}</p>
+      {!coverage?.complete ? (
+        <p className="mt-2 flex items-start gap-2 text-xs leading-5 text-amber-300" role="status">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          当前窗口尚未完整覆盖，可能包含断连、未采集区间或未结束的未来窗口。未查到记录不代表没有错误。
+          {coverage?.status === "historical_import" ? "历史快照不证明连续采集。" : ""}
+        </p>
+      ) : null}
+      {coverage?.reason === "source_error_table_unavailable" ? <p className="mt-2 text-xs text-amber-300">旧 OMC 数据库没有 error_events 表，历史错误不可用。</p> : null}
+      {coverage?.gaps.length ? <details className="mt-2 text-xs text-slate-400"><summary className="cursor-pointer">未覆盖区间（{coverage.gaps.length}）</summary>
+        <ul className="mt-1 space-y-1">{coverage.gaps.map((gap) => <li key={gap.from}>{timeText(gap.from)} → {timeText(gap.to)}</li>)}</ul>
+      </details> : null}
+      {!events.length ? <p className="mt-3 text-sm text-slate-500">{coverage?.complete ? "完整观测窗口内未记录到关联错误。" : "当前可用证据中未查到关联记录。"}</p> : (
+        <div className="mt-3 space-y-3">{events.map((event) => (
+          <article key={event.id} className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
+              <time>{timeText(event.occurred_at)}</time>
+              <span className="font-mono text-indigo-300">Δ {event.time_delta_ms >= 0 ? "+" : ""}{event.time_delta_ms} ms</span>
+              <span>HTTP {event.status_code ?? "—"} · {event.code || "—"}</span>
+              <span>{event.origin_system === "oh_my_cpa" ? "OMC 历史导入" : "CPA 实时订阅"}</span>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <Field label={"Provider · " + (event.provider_match ? "匹配" : "未匹配")} value={event.provider} />
+              <Field label={"模型 · " + (event.model_match ? "匹配" : "未匹配")} value={event.model} />
+              <Field label="可重试" value={event.retryable} />
+              <Field label="配额原因" value={event.quota_reason} />
+              <Field label="凭据重试时间" value={timeText(event.next_retry_after)} />
+              <Field label="凭据恢复时间" value={timeText(event.next_recover_at)} />
+              <Field label="模型冷却" value={event.cooldown_model} />
+              <Field label="模型恢复时间" value={timeText(event.model_next_recover_at)} />
+            </div>
+            {event.body ? <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-950/70 p-2 text-xs leading-5 text-rose-200">{event.body}</pre> : null}
+            <details className="mt-2 text-xs text-slate-400"><summary className="cursor-pointer">脱敏凭据 / 模型状态与退避</summary>
+              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify({ auth_status: event.auth_status, quota_exceeded: event.quota_exceeded,
+                backoff_level: event.backoff_level, auth_quota_aggregate: event.auth_quota_aggregate, model_quota_inherited: event.model_quota_inherited,
+                model_quota_exceeded: event.model_quota_exceeded, model_quota_reason: event.model_quota_reason,
+                model_next_retry_after: event.model_next_retry_after, model_backoff_level: event.model_backoff_level }, null, 2)}</pre>
+            </details>
+          </article>
+        ))}</div>
+      )}
+    </Section>
+  );
+}
 
 type TokenSegment = {
   key: "cache_read" | "input" | "reasoning" | "output";
@@ -810,6 +871,7 @@ export default function RecordDetailsDrawer({ eventId, occurredAt, onClose }: Pr
 
               {activeTab === "diagnostics" ? (
                 <>
+                  <CredentialErrors evidence={record.credentialErrors} />
                   {record.isError ? (
                     <Section title="错误与失败原因" description="以下内容来自当前请求本身，不与其他请求的错误混合。">
                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">

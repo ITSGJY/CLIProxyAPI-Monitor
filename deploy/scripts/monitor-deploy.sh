@@ -15,6 +15,20 @@ source ./.env
 set +a
 [[ "${MONITOR_IMAGE:-}" == "${IMAGE_REPOSITORY}:"* ]] || fail "MONITOR_IMAGE repository mismatch"
 [[ -n "${MONITOR_DATABASE_URL:-}" ]] || fail "MONITOR_DATABASE_URL is missing"
+case "${ERROR_COLLECTOR_ENABLED:-false}" in
+  true)
+    [[ "${ERROR_COLLECTOR_ALLOW_PRODUCTION_TARGET:-false}" == "true" ]] || fail "ERROR_COLLECTOR_ALLOW_PRODUCTION_TARGET must be true when error collection is enabled"
+    [[ "${ERROR_COLLECTOR_ALLOW_PRODUCTION_DATABASE:-false}" == "true" ]] || fail "ERROR_COLLECTOR_ALLOW_PRODUCTION_DATABASE must be true when error collection is enabled"
+    [[ -n "${CPA_MANAGEMENT_KEY:-}" && -n "${CPA_INSTANCE_ID:-}" && -n "${MONITOR_DATABASE_URL_HOST:-}" ]] || fail "error collector production connection settings are incomplete"
+    error_collector_enabled=true
+    ;;
+  false|"")
+    error_collector_enabled=false
+    ;;
+  *)
+    fail "ERROR_COLLECTOR_ENABLED must be true or false"
+    ;;
+esac
 install -d -m 700 /var/backups/cliproxyapi-monitor
 available_kb="$(df -Pk /var/backups/cliproxyapi-monitor | awk 'NR==2 {print $4}')"
 (( available_kb > 1048576 )) || fail "less than 1 GiB free for a database backup"
@@ -44,6 +58,11 @@ web_was_running="$(docker inspect --format '{{.State.Running}}' cliproxyapi-moni
 processor_was_running="$(docker inspect --format '{{.State.Running}}' cliproxyapi-monitor-processor 2>/dev/null || echo false)"
 rollup_was_running="$(docker inspect --format '{{.State.Running}}' cliproxyapi-monitor-rollup 2>/dev/null || echo false)"
 collector_was_running="$(docker inspect --format '{{.State.Running}}' cliproxyapi-monitor-collector 2>/dev/null || echo false)"
+error_collector_was_running="$(docker inspect --format '{{.State.Running}}' cliproxyapi-monitor-error-collector 2>/dev/null || echo false)"
+compose_profiles=(--profile collector)
+if [[ "$error_collector_enabled" == "true" || "$error_collector_was_running" == "true" ]]; then
+  compose_profiles+=(--profile error-collector)
+fi
 
 python3 - "$DEPLOY_DIR/.env" "$NEW_IMAGE" <<'PY'
 import os, sys, tempfile
@@ -98,14 +117,20 @@ PY
   if [[ "$processor_was_running" == "true" ]]; then services+=(processor); fi
   if [[ "$rollup_was_running" == "true" ]]; then services+=(rollup); fi
   if [[ "$collector_was_running" == "true" ]]; then services+=(collector); fi
+  if [[ "$error_collector_was_running" == "true" && "$error_collector_enabled" == "true" ]]; then
+    services+=(error-collector)
+  else
+    docker compose --profile error-collector --env-file .env -f compose.yaml stop error-collector >/dev/null 2>&1 || true
+  fi
   if (( ${#services[@]} > 0 )); then
-    docker compose --profile collector --env-file .env -f compose.yaml up -d "${services[@]}" || true
+    docker compose "${compose_profiles[@]}" --env-file .env -f compose.yaml up -d "${services[@]}" || true
   fi
 }
 echo "image_pull_start=true"
 pull_services=(web processor rollup)
 if [[ "$collector_was_running" == "true" ]]; then pull_services+=(collector); fi
-if ! docker compose --profile collector --env-file .env -f compose.yaml pull "${pull_services[@]}"; then
+if [[ "$error_collector_enabled" == "true" || "$error_collector_was_running" == "true" ]]; then pull_services+=(error-collector); fi
+if ! docker compose "${compose_profiles[@]}" --env-file .env -f compose.yaml pull "${pull_services[@]}"; then
   rollback_application
   fail "image pull failed; previous application image restored"
 fi
@@ -117,7 +142,15 @@ fi
 echo "application_rollout_start=true"
 rollout_services=(web processor rollup)
 if [[ "$collector_was_running" == "true" ]]; then rollout_services+=(collector); fi
-if ! docker compose --profile collector --env-file .env -f compose.yaml up -d "${rollout_services[@]}"; then
+if [[ "$error_collector_enabled" == "true" ]]; then
+  rollout_services+=(error-collector)
+elif [[ "$error_collector_was_running" == "true" ]]; then
+  docker compose "${compose_profiles[@]}" --env-file .env -f compose.yaml stop error-collector || {
+    rollback_application
+    fail "could not stop the disabled error collector"
+  }
+fi
+if ! docker compose "${compose_profiles[@]}" --env-file .env -f compose.yaml up -d "${rollout_services[@]}"; then
   rollback_application
   fail "application rollout failed; previous application image restored"
 fi
@@ -128,18 +161,21 @@ for attempt in $(seq 1 60); do
   if [[ "$collector_was_running" == "true" ]]; then
     collector_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' cliproxyapi-monitor-collector 2>/dev/null || true)"
   fi
-  if [[ "$state" == "healthy" && "$collector_state" == "healthy" ]] && curl -fsS --max-time 5 http://127.0.0.1:15300/login >/dev/null; then
+  error_collector_state=healthy
+  if [[ "$error_collector_enabled" == "true" ]]; then
+    error_collector_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' cliproxyapi-monitor-error-collector 2>/dev/null || true)"
+  fi
+  if [[ "$state" == "healthy" && "$collector_state" == "healthy" && "$error_collector_state" == "healthy" ]] && curl -fsS --max-time 5 http://127.0.0.1:15300/login >/dev/null; then
     healthy=true
     break
   fi
   sleep 2
 done
 if [[ "$healthy" != true ]]; then
-  if [[ "$collector_was_running" == "true" ]]; then
-    docker compose --profile collector --env-file .env -f compose.yaml logs --tail 80 web processor rollup collector >&2 || true
-  else
-    docker compose --env-file .env -f compose.yaml logs --tail 80 web processor rollup >&2 || true
-  fi
+  log_services=(web processor rollup)
+  if [[ "$collector_was_running" == "true" ]]; then log_services+=(collector); fi
+  if [[ "$error_collector_enabled" == "true" || "$error_collector_was_running" == "true" ]]; then log_services+=(error-collector); fi
+  docker compose "${compose_profiles[@]}" --env-file .env -f compose.yaml logs --tail 80 "${log_services[@]}" >&2 || true
   rollback_application
   fail "new application did not become healthy; previous application image restored"
 fi
@@ -147,4 +183,4 @@ find /var/backups/cliproxyapi-monitor -type f -name 'predeploy-*.dump' -mtime +1
 echo "deployment_result=success"
 echo "deployed_image=${NEW_IMAGE}"
 echo "database_backup=${backup_file}"
-docker compose --env-file .env -f compose.yaml ps
+docker compose "${compose_profiles[@]}" --env-file .env -f compose.yaml ps

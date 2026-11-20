@@ -111,6 +111,13 @@ test("records page exposes configurable event columns, request details and filte
   };
   const detail = {
     ...summary,
+    credentialErrors: {
+      attribution: "credential_time_window", window_ms: 120000, limit: 20,
+      coverage: { status: "partial", complete: false, window_closed: false, gaps: [{ from: occurredAt, to: "2026-11-19T06:00:01Z" }], reason: "window_not_fully_observed" },
+      events: [{ id: "error-1", occurred_at: occurredAt, received_at: occurredAt, provider: "OpenAI", model: "gpt-6", status_code: 429,
+        code: "quota", body: '<script>window.phase55Unsafe = true</script>', retryable: true, auth_status: { status: "error" },
+        time_delta_ms: -1000, provider_match: true, model_match: true, attribution: "credential_time_window", origin_system: "cpa" }]
+    },
     ingestedAt: "2026-11-19T06:00:02.000Z",
     sourceInstanceId: "e2e-instance",
     originSystem: "cpa_live",
@@ -261,6 +268,13 @@ test("records page exposes configurable event columns, request details and filte
   await expect(dialog.getByText("Reasoning Tokens").last()).toBeVisible();
 
   await dialog.getByRole("tab", { name: "诊断" }).click();
+  await expect(dialog.getByRole("tab")).toHaveCount(4);
+  await expect(dialog.getByRole("heading", { name: "凭据关联错误" })).toBeVisible();
+  await expect(dialog.getByText(/不代表已证明的因果关系/)).toBeVisible();
+  await expect(dialog.getByText(/未查到记录不代表没有错误/)).toBeVisible();
+  await expect(dialog.getByText("Δ -1000 ms")).toBeVisible();
+  await expect(dialog.getByText('<script>window.phase55Unsafe = true</script>', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as Record<string, unknown>).phase55Unsafe)).toBeUndefined();
   await expect(dialog.getByRole("heading", { name: "响应头" })).toBeVisible();
   await expect(dialog.getByText("Client IP")).toBeVisible();
   const requestLogDownloadPromise = page.waitForEvent("download");

@@ -61,7 +61,7 @@ test("PostgreSQL migration preflight ignores model_prices in an unrelated schema
          to_regclass('public.usage_events') IS NOT NULL AS usage_events_created,
          to_regclass('unrelated_probe.model_prices') IS NOT NULL AS unrelated_table_preserved`
     );
-    assert.equal(verification.rows[0].migration_count, 11);
+    assert.equal(verification.rows[0].migration_count, 12);
     assert.equal(verification.rows[0].usage_events_created, true);
     assert.equal(verification.rows[0].unrelated_table_preserved, true);
   } finally {
@@ -106,7 +106,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
         "0007_phase6_legacy_import.sql",
         "0008_resp_subscription.sql",
         "0009_request_event_context.sql",
-        "0010_pricing_center.sql"
+        "0010_pricing_center.sql", "0011_cpa_error_events.sql"
       ];
       for (const migration of migrations) {
         const sql = await readFile(new URL("../drizzle/" + migration, import.meta.url), "utf8");

@@ -12,6 +12,7 @@ def main():
     parser.add_argument("--source", required=True)
     parser.add_argument("--destination", required=True)
     parser.add_argument("--event-before-ms", type=int, help="Exclude CPA events whose original event timestamp is after the subscription boundary")
+    parser.add_argument("--error-before-ms", type=int, help="Independent error subscription boundary; filters only the snapshot's error_events")
     args = parser.parse_args()
     source = Path(args.source).resolve(strict=True)
     destination = Path(args.destination).resolve()
@@ -35,6 +36,16 @@ def main():
                 dst.execute("DELETE FROM usage_events WHERE timestamp_ms > ?", (args.event_before_ms,))
                 dst.commit()
                 dst.execute("VACUUM")
+            if args.error_before_ms is not None:
+                if args.error_before_ms <= 0:
+                    raise ValueError("--error-before-ms must be positive")
+                columns = {row[1] for row in dst.execute("PRAGMA table_info(error_events)")}
+                if columns:
+                    if "timestamp_ms" not in columns:
+                        raise ValueError("error_events is missing timestamp_ms")
+                    dst.execute("DELETE FROM error_events WHERE timestamp_ms > ?", (args.error_before_ms,))
+                    dst.commit()
+                    dst.execute("VACUUM")
             result = dst.execute("PRAGMA quick_check").fetchone()[0]
             if result != "ok":
                 raise RuntimeError("Snapshot quick_check failed: " + str(result))

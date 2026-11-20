@@ -595,3 +595,106 @@ export const pricingChannelVersions = pgTable(
     channelEffectiveUnique: uniqueIndex("pricing_channel_versions_channel_effective_from_key").on(table.channel, table.effectiveFrom)
   })
 );
+
+// Phase 5.5: separate credential error stream and audit history.
+export const cpaErrorCollectorState = pgTable("cpa_error_collector_state", {
+  sourceInstanceId: text("source_instance_id").primaryKey(),
+  enabled: boolean("enabled").notNull().default(true),
+  state: text("state").notNull().default("connecting"),
+  leaseOwner: text("lease_owner"),
+  leaseEpoch: bigint("lease_epoch", { mode: "number" }).notNull().default(0),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  heartbeatAt: timestamp("heartbeat_at", { withTimezone: true }),
+  lastEventAt: timestamp("last_event_at", { withTimezone: true }),
+  lastErrorCode: text("last_error_code"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+}, (t) => [check("cpa_error_collector_state_state_check", sql`${t.state} IN ('connecting','collecting','disconnected','degraded','disabled')`)]);
+
+export const cpaErrorSubscriptionSessions = pgTable("cpa_error_subscription_sessions", {
+  id: bigint("id", { mode: "number" }).generatedAlwaysAsIdentity().primaryKey(),
+  sourceInstanceId: text("source_instance_id").notNull().references(() => cpaErrorCollectorState.sourceInstanceId),
+  leaseEpoch: bigint("lease_epoch", { mode: "number" }).notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  subscribedAt: timestamp("subscribed_at", { withTimezone: true }),
+  coverageThrough: timestamp("coverage_through", { withTimezone: true }),
+  endedAt: timestamp("ended_at", { withTimezone: true }),
+  endReason: text("end_reason"),
+  receivedCount: bigint("received_count", { mode: "number" }).notNull().default(0),
+  insertedCount: bigint("inserted_count", { mode: "number" }).notNull().default(0),
+  duplicateCount: bigint("duplicate_count", { mode: "number" }).notNull().default(0),
+  malformedCount: bigint("malformed_count", { mode: "number" }).notNull().default(0)
+}, (t) => [
+  index("cpa_error_sessions_window_idx").on(t.sourceInstanceId, t.subscribedAt, t.coverageThrough),
+  uniqueIndex("cpa_error_sessions_open_idx").on(t.sourceInstanceId).where(sql`${t.endedAt} IS NULL`),
+  check("cpa_error_subscription_sessions_check", sql`${t.coverageThrough} IS NULL OR (${t.subscribedAt} IS NOT NULL AND ${t.coverageThrough} >= ${t.subscribedAt})`)
+]);
+
+export const cpaErrorImportRuns = pgTable("cpa_error_import_runs", {
+  id: bigint("id", { mode: "number" }).generatedAlwaysAsIdentity().primaryKey(),
+  sourceInstanceId: text("source_instance_id").notNull(),
+  sourceSha256: text("source_sha256").notNull(),
+  sourceSchemaVersion: text("source_schema_version"),
+  status: text("status").notNull(),
+  expectedCount: bigint("expected_count", { mode: "number" }),
+  processedCount: bigint("processed_count", { mode: "number" }).notNull().default(0),
+  insertedCount: bigint("inserted_count", { mode: "number" }).notNull().default(0),
+  skippedCount: bigint("skipped_count", { mode: "number" }).notNull().default(0),
+  failedCount: bigint("failed_count", { mode: "number" }).notNull().default(0),
+  reconciledCount: bigint("reconciled_count", { mode: "number" }).notNull().default(0),
+  minOccurredAt: timestamp("min_occurred_at", { withTimezone: true }),
+  maxOccurredAt: timestamp("max_occurred_at", { withTimezone: true }),
+  lastErrorCode: text("last_error_code"),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true })
+}, (t) => [
+  index("cpa_error_import_runs_snapshot_idx").on(t.sourceInstanceId, t.sourceSha256),
+  check("cpa_error_import_runs_status_check", sql`${t.status} IN ('running','completed','failed','unavailable')`),
+  check("cpa_error_import_runs_expected_count_check", sql`${t.expectedCount} IS NULL OR ${t.expectedCount} >= 0`),
+  check("cpa_error_import_runs_check", sql`${t.processedCount} = ${t.insertedCount} + ${t.skippedCount} + ${t.failedCount}`),
+  check("cpa_error_import_runs_check1", sql`${t.status} <> 'completed' OR (${t.processedCount} = ${t.expectedCount} AND ${t.reconciledCount} = ${t.expectedCount} AND ${t.failedCount} = 0)`)
+]);
+
+export const cpaErrorEvents = pgTable("cpa_error_events", {
+    id: bigint("id", { mode: "number" }).generatedAlwaysAsIdentity().primaryKey(),
+    sourceInstanceId: text("source_instance_id").notNull(),
+    eventKey: text("event_key").notNull(),
+    originSystem: text("origin_system").notNull(),
+    sourceTransport: text("source_transport").notNull(),
+    sourceNativeId: text("source_native_id"),
+    sourceSnapshotSha256: text("source_snapshot_sha256"),
+    importRunId: bigint("import_run_id", { mode: "number" }).references(() => cpaErrorImportRuns.id),
+    subscriptionSessionId: bigint("subscription_session_id", { mode: "number" }).references(() => cpaErrorSubscriptionSessions.id),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull(),
+    authIndex: text("auth_index"),
+    provider: text("provider"),
+    model: text("model"),
+    statusCode: integer("status_code"),
+    code: text("code"),
+    body: text("body"),
+    retryable: boolean("retryable"),
+    authStatus: jsonb("auth_status").notNull().default(sql`'{}'::jsonb`),
+    quotaExceeded: boolean("quota_exceeded"),
+    quotaReason: text("quota_reason"),
+    nextRetryAfter: timestamp("next_retry_after", { withTimezone: true }),
+    nextRecoverAt: timestamp("next_recover_at", { withTimezone: true }),
+    backoffLevel: integer("backoff_level"),
+    cooldownModel: text("cooldown_model"),
+    modelQuotaExceeded: boolean("model_quota_exceeded"),
+    modelQuotaReason: text("model_quota_reason"),
+    modelNextRetryAfter: timestamp("model_next_retry_after", { withTimezone: true }),
+    modelNextRecoverAt: timestamp("model_next_recover_at", { withTimezone: true }),
+    modelBackoffLevel: integer("model_backoff_level"),
+    authQuotaAggregate: boolean("auth_quota_aggregate"),
+    modelQuotaInherited: boolean("model_quota_inherited"),
+}, (t) => [
+  uniqueIndex("cpa_error_events_instance_key_unique").on(t.sourceInstanceId, t.eventKey),
+  index("cpa_error_events_correlation_idx").on(t.sourceInstanceId, t.authIndex, t.occurredAt, t.id).where(sql`${t.authIndex} IS NOT NULL AND ${t.authIndex} <> ''`),
+  check("cpa_error_events_origin_system_check", sql`${t.originSystem} IN ('cpa','oh_my_cpa')`),
+  check("cpa_error_events_source_transport_check", sql`${t.sourceTransport} IN ('resp-subscribe','legacy_import')`)
+]);
+
+export const cpaErrorImportItems = pgTable("cpa_error_import_items", {
+  runId: bigint("run_id", { mode: "number" }).notNull().references(() => cpaErrorImportRuns.id),
+  eventId: bigint("event_id", { mode: "number" }).notNull().references(() => cpaErrorEvents.id, { onDelete: "cascade" })
+}, (t) => [primaryKey({ columns: [t.runId, t.eventId] })]);

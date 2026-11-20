@@ -103,7 +103,8 @@ The existing PostgreSQL 17 container reported `max_connections=100` during the l
 - Collector pool: maximum 2.
 - Processor pool: maximum 2.
 - Rollup pool: maximum 1.
-- Health CLI: maximum 1, short-lived.
+- Optional error collector pool: maximum 1.
+- Each health CLI: maximum 1, short-lived; the usage and error probes are independent.
 - Migration / operator connections: temporary and serialized.
 
 Keep the Monitor's steady-state application budget at or below 9 connections. Do not increase pool defaults without observing `pg_stat_activity`, memory and dashboard query latency.
@@ -117,3 +118,11 @@ Keep the Monitor's steady-state application budget at or below 9 connections. Do
 - CI uses an ephemeral PostgreSQL 17 service and a dedicated test database.
 - Production uses a dedicated database and role inside the existing PostgreSQL service; Cloudreve's database, role and volume remain untouched.
 - Production Collector uses `SUBSCRIBE`; it does not stop or compete with other broadcast subscribers. FIFO pull remains a separately coordinated compatibility mode.
+
+## Phase 5.5: independent credential error evidence
+
+CPA `errors` has a separate RESP connection, collector process, fenced lease, session history and Compose profile. It writes sanitized projections directly to `cpa_error_events`; it never consumes FIFO errors, enters `usage_inbox`, or controls the usage subscription. OMC errors use a separate audited importer and the same legacy instance ID as historical usage.
+
+Records Diagnostics associates at most 20 events by CPA instance, non-empty credential index and an inclusive ±120-second window. Signed deltas and provider/model matches are investigative evidence, not request IDs or proof of causation. Session watermarks and import audits distinguish complete, collecting, gap, disconnected, unavailable and failed-query coverage. Read events and coverage within one PostgreSQL snapshot.
+
+See [Phase 5.5 runbook](phase5.5-cpa-error-events.md) for the pinned CPA v8.0.56 / OMC v0.4.2 contract, privacy projection, state semantics, migration, import reconciliation and deployment prerequisites.
