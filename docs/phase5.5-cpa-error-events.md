@@ -102,9 +102,9 @@ DATABASE_URL=postgresql://test:test@127.0.0.1:55458/cpa_monitor_test \
 
 ## 生产部署与验收
 
-- 生产部署于 2026-11-20 14:12 UTC 完成，GitHub Actions run 44750179409，代码提交 4a7d17395c645c479fdf9a8593fa171e43e6725e，镜像 ghcr.io/itsgjy/cliproxyapi-monitor:sha-4a7d173。完整测试、PostgreSQL 17 重启持久性、AMD64/ARM64 构建、多架构 Manifest、容器 Smoke Test 和 Oracle 部署 Job 均成功。
+- Phase 5.5 初次生产部署于 2026-11-20 14:12 UTC 完成，GitHub Actions run 44750179409，代码提交 4a7d17395c645c479fdf9a8593fa171e43e6725e，镜像 ghcr.io/itsgjy/cliproxyapi-monitor:sha-4a7d173。随后修复 Usage Collector 健康检查的 RESP Subscription 假容量告警，提交 7f871e9b5e71364ff704fe38918e581e66a36e83，GitHub Actions run 44759282422 成功，当前镜像为 ghcr.io/itsgjy/cliproxyapi-monitor:sha-7f871e9。两次发布均通过完整测试、PostgreSQL 17 重启持久性、AMD64/ARM64 构建、多架构 Manifest、容器 Smoke Test 和 Oracle 部署 Job。
 - 部署前数据库备份为 /var/backups/cliproxyapi-monitor/predeploy-sha-4a7d173-20261120T141215Z.dump；pg_restore 临时库恢复验证通过，恢复出 22 张 public 表。迁移 0011 已应用。
-- Web、Processor、Rollup、Usage Collector、Error Collector 和 PostgreSQL 17 均运行正常；Web、Usage Collector、Error Collector Docker health 均为 healthy。公开入口 https://cpa-monitor.gjy666.eu.cc/login 返回 HTTP 200。
+- Web、Processor、Rollup、Usage Collector、Error Collector 和 PostgreSQL 17 均运行正常；Web、Usage Collector、Error Collector Docker health 均为 healthy。Usage Collector 健康报告 recentFullBatchCount=0、capacityWarning=false；该指标现只统计 resp/http FIFO Pull，不再把 resp-subscribe 广播事件误判为满批次。公开入口 https://cpa-monitor.gjy666.eu.cc/login 返回 HTTP 200。
 - 生产错误采集已启用独立 error-collector Compose profile，CPA 实例 ID 为 oracle-primary，关联窗口为前后 120 秒；两个生产目标保护开关已显式启用。GitHub Production 分支白名单曾临时加入本功能分支，部署完成后已恢复为 main 与 feat/phase6-legacy-import。
 - Error Collector 健康 API 返回 healthy=true、status=collecting。当前订阅 session 已收到 SUBSCRIBE 确认并持续推进数据库覆盖水位；最终验收时 received_count=0，尚未有自然发生的实时错误通知，因此没有向生产 CPA 注入合成错误。真实 RESP AUTH/SUBSCRIBE/PONG/UNSUBSCRIBE 只读握手已通过。
 - OMC 历史导入核对：原始快照 17,170 条 Usage，完成 42 条与实时数据完全匹配的成功请求去重后保留 17,128 条；价格版本 112/112，错误事件 156/156。最终历史 Usage 为 3,290 条 priced、13,838 条 unpriced、2,761 条 is_error，成本 74,385,946,498 nanos；错误导入 inserted=156、skipped=0、failed=0、reconciled=156。实时 Usage 另有 50 条，其中 3 条 is_error；身份表与 Usage 主表均为 17,178 条。

@@ -7,7 +7,8 @@
 - Records 诊断增加凭据关联错误：同实例、非空 auth_index、前后 120 秒闭区间、按绝对时间差稳定排序并限制 20 条；展示有符号时间差、Provider/模型匹配和覆盖状态，明确不构成因果证明。事件与覆盖使用同一数据库快照，防止读竞争误报完整空结果。
 - 扩展只读 OMC SQLite 导出与 Node `--errors-only` 导入，兼容模型冷却迁移前后的可选列；保留 auth_index/原始时间、固定 legacy 实例、验证快照 SHA256 和最终计数、拒绝变更的源行身份、支持重复导入与中断审计；缺少 error_events 明确记为 unavailable。
 - 新增单元、PostgreSQL 17、旧/新 SQLite 导入、边界与隐私回归测试及 CI 架构 guard；扩展浏览器验收覆盖错误正文转义，补充 Phase 5.5 架构与运维手册。
-- Phase 5.5 已部署到 Oracle：镜像 sha-4a7d173，GitHub Actions run 44750179409 成功；迁移 0011 应用，Web/Usage Collector/Error Collector 健康，生产部署分支白名单已恢复。
+- Phase 5.5 已部署到 Oracle：初始镜像 sha-4a7d173，后续健康检查修复镜像 sha-7f871e9；GitHub Actions runs 44750179409、44759282422 均成功。迁移 0011 应用，Web/Usage Collector/Error Collector 健康，Production 分支白名单已恢复。
+- 修复 Usage Collector 健康检查把 RESP SUBSCRIBE 累计广播事件误判为 FIFO 满批次的问题；现在 recentFullBatchCount 只统计 resp/http Pull，生产验收 capacityWarning=false，Inbox 无积压。
 - 完成 OMC v0.4.8 历史导入：17,170 条 Usage 源行经 42 条与实时 Usage 完全匹配的重复项校正后保留 17,128 条；112 个价格版本、156 条错误事件全部完成数量核对。5 条 OMC 独有断线间隙记录保留；120 天 Rollup 已回填，Records API 历史关联烟测通过。实时 Error Collector 已健康订阅，等待首条自然错误事件完成实时写入验收。
 
 ## 2026-11-19
