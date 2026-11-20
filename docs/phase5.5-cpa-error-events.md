@@ -8,7 +8,7 @@
 
 - CPA **v8.0.56**，提交 `585f97deac9aa57c700301221fb1a7085e1827cc`：[error_events.go](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.56/sdk/cliproxy/auth/error_events.go)、[redis_queue_protocol.go](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.56/internal/api/redis_queue_protocol.go)。`AUTH` 后单独 `SUBSCRIBE errors`，确认帧为 `subscribe/errors/1`。订阅期间支持 `PING` / `UNSUBSCRIBE`。
 - OMC **v0.4.2**，提交 `0a06f85a186cf44480b3e18f8fc425a5dfd90035`：[decode.go](https://github.com/WizisCool/oh-my-cpa/blob/v0.4.2/internal/usage/decode.go)、[002_usage_ingest.sql](https://github.com/WizisCool/oh-my-cpa/blob/v0.4.2/migrations/002_usage_ingest.sql)、[059_model_cooldowns.sql](https://github.com/WizisCool/oh-my-cpa/blob/v0.4.2/migrations/059_model_cooldowns.sql)。错误行没有可用于精确请求归因的 Request ID。
-- 生产快照实际来自 OMC **v0.4.8**（commit `a920ac22`），SQLite `schema_migrations` 版本 **71**；`error_events` 共 **156** 行，所有 importer 必需列均存在。只读快照：`/var/backups/cliproxyapi-monitor/omc-phase55-errors-20261120.sqlite`，SHA256 `f6568b078042fe37b29282ef655e6a22a07505f7bd3e8618edab2d90a3a5a9da`。待 Monitor 生产迁移完成后导入这 156 条历史错误。
+- 生产源实际来自 OMC v0.4.8（commit a920ac22），SQLite schema_migrations 版本 71。生产交接快照为 /var/backups/cliproxyapi-monitor/omc-phase55-handover-20261120.sqlite，SHA256 cc3a0de8160fa60248893fd9993e65697a3fffe4d96e6db00b6d41776d1e3083；包含按 Usage 订阅边界过滤后的 17,170 条 usage_events、112 个价格版本和完整的 156 条 error_events。
 CPA 的 `timestamp/provider/model/auth_index/status_code/body/code/retryable` 和 `auth_status` 白名单被规范化；凭据及模型的 status/status_message/unavailable/next_retry_after/quota 均保留，凭据另含 disabled。quota 保存 exceeded/reason/next_recover_at/backoff_level。`auth_id` 仅在内存中用于移除正文中的精确匹配，随后丢弃。
 
 与 OMC 一致：存在模型状态且凭据 quota.reason 为 `quota` 时，`auth_quota_aggregate=true`；reason 为 `credential_quota`、两级 exceeded 且模型重试/恢复时间均不晚于凭据最大重试/恢复时间时，`model_quota_inherited=true`。缺失字段保留 unknown/null，不伪造零配额或恢复时间；OMC migration 059 缺列时新增布尔值默认 false、model_backoff_level 默认 0，其余可选字段为 null。旧 OMC `auth_status` 只有状态消息，无法补造 CPA 原始状态枚举或模型消息。
@@ -79,7 +79,7 @@ Records 以同一 `source_instance_id` + 非空 `auth_index` 查询闭区间 `[o
 
 ## 历史导入操作
 
-只对已授权的本地备份快照运行；本阶段只用合成测试数据。快照使用 SQLite backup API；源连接 read-only。`--event-before-ms` 仍只限制 Usage；新增 `--error-before-ms` 单独限制 snapshot 中的 error_events，不能用 Usage 订阅时间代替 errors 的订阅时间。两个界限均包含边界，不修改源数据库。缺失 error_events 不会创建假表。
+生产历史导入已于 2026-11-20 完成。快照由 SQLite Backup API 创建，源数据库只读。Usage 快照截止点使用 Monitor 最新一次 CPA SUBSCRIBE usage 服务端确认时间 2026-11-19T22:30:43.759338Z（Unix 毫秒 1795127443759），原始快照包含 17,170 条 Usage、112 个价格版本及全部 156 条错误事件。随后按全部 Usage Subscription 会话核对实时重叠：首次成功确认时间为 2026-11-18T13:58:47.939374Z，42 条与 oracle-primary 在时间、Provider、Model、状态码、auth_index 和 Token 分桶上完全一致的历史行被删除，5 条没有实时对应项的 OMC 独有行保留。最终保留 17,128 条历史 Usage。删除的 42 条均为成功请求，成本 1,424,386,000 nanos、Token 1,146,953；精确 event_id 列表及匹配字段已写入 usage_import_runs.manifest.live_overlap_reconciliation。Error Collector 在快照后才启动，因此 156 条错误事件全部保留并映射到 legacy-oh-my-cpa-default；实时 CPA 保持 oracle-primary。快照 SHA256 为 cc3a0de8160fa60248893fd9993e65697a3fffe4d96e6db00b6d41776d1e3083。
 
 ```bash
 # 所有示例路径和 URL 均须指向隔离测试目标。
@@ -100,20 +100,15 @@ DATABASE_URL=postgresql://test:test@127.0.0.1:55458/cpa_monitor_test \
 
 若没有 error_events，run 状态为 `unavailable`、expected_count 为 null，原因 `source_error_table_unavailable`；有表但零行则可完成 expected=0 的快照审计，仍不声称任意时间窗完整。不要把源数据库表存在/零行视作连续覆盖证明。
 
-## 部署前提与故障检查
+## 生产部署与验收
 
-1. 后续部署前备份并审查迁移 `0011`，在目标 PostgreSQL 17 应用；本次没有执行生产迁移。
-2. 同一真实 CPA 必须使用与 Usage 完全相同的 CPA_INSTANCE_ID；不同 CPA 使用不同 ID。历史导入保持固定 legacy ID，不将历史数据伪装为新的实时实例。
-3. 已对真实 CPA v8.0.56 做只读 AUTH → SUBSCRIBE errors → PONG → UNSUBSCRIBE smoke test；未向生产 CPA 注入错误。真实 CPA 错误事件 → PostgreSQL 持久化端到端验收仍待自然错误事件；断线、背压、重启和持久化由合成 RESP + PostgreSQL 集成测试覆盖。
-4. 显式启用新的 `error-collector` Compose profile，并在 web/error-collector 一致配置 ERROR_COLLECTOR_ENABLED。默认 false；生产 CPA 与数据库另有 ERROR_COLLECTOR_ALLOW_PRODUCTION_TARGET / ERROR_COLLECTOR_ALLOW_PRODUCTION_DATABASE 两个独立开关，不继承 Usage 开关。
-5. `pnpm error-collector:health` 检查 lease、进程心跳及有效 session 水位；不要求空闲期间必须收到错误。`GET /api/collector/errors/status` 使用现有应用认证。health 非零时只排查 error collector/session 表，保持 usage 服务运行。
-6. 查看 end_reason（backpressure、probe_timeout、persistence_failed、malformed_payload、stream_interrupted、lease_expired、shutdown）和 coverage_through；已确认水位之后是未知区间，不从 FIFO 补拉。
-7. 回退时只停止 error collector/profile 和关闭新开关，保留错误表及审计证据；不删除 Usage/OMC 数据。生产部署 helper 已纳入错误 Collector 的独立 profile、显式生产目标保护、启停状态保留、独立健康门禁与失败回滚；错误 Collector 故障不会触发 Usage Collector 停止。
-## 验证入口
-
-- `pnpm test`：现有 Usage/Pricing 回归、独立 RESP 连接/确认、严格 channel、背压、畸形协议、排空、重连/lease 失效、隐私、覆盖与静态边界 guard。
-- `TEST_DATABASE_URL=<disposable PG17> pnpm test:postgres`：全部迁移、错误幂等/租约 fencing、真实 socket + PG 重连、双实例隔离、±120s 闭边界/排序/20 条、覆盖窗口与 MVCC 竞争回归；既有 Inbox/Processor/定价/聚合测试仍运行。
-- `TEST_DATABASE_URL=<disposable PG17> pnpm test:import`：旧/新 OMC error schema、hash/计数/行身份变更、缺表/空表、重复/中断恢复、独立 snapshot cutoff、既有 Usage 导入。
-- `pnpm lint`、`pnpm typecheck`、`pnpm build-only`；CI 已通过现有 scripts 纳入新增测试，Playwright 的 Records 场景验证四标签和错误正文 HTML 转义。
-
-本分支交付保持未提交、未推送、未部署；未读生产秘密文件、未连接生产数据库、未重启任何既有容器。
+- 生产部署于 2026-11-20 14:12 UTC 完成，GitHub Actions run 44750179409，代码提交 4a7d17395c645c479fdf9a8593fa171e43e6725e，镜像 ghcr.io/itsgjy/cliproxyapi-monitor:sha-4a7d173。完整测试、PostgreSQL 17 重启持久性、AMD64/ARM64 构建、多架构 Manifest、容器 Smoke Test 和 Oracle 部署 Job 均成功。
+- 部署前数据库备份为 /var/backups/cliproxyapi-monitor/predeploy-sha-4a7d173-20261120T141215Z.dump；pg_restore 临时库恢复验证通过，恢复出 22 张 public 表。迁移 0011 已应用。
+- Web、Processor、Rollup、Usage Collector、Error Collector 和 PostgreSQL 17 均运行正常；Web、Usage Collector、Error Collector Docker health 均为 healthy。公开入口 https://cpa-monitor.gjy666.eu.cc/login 返回 HTTP 200。
+- 生产错误采集已启用独立 error-collector Compose profile，CPA 实例 ID 为 oracle-primary，关联窗口为前后 120 秒；两个生产目标保护开关已显式启用。GitHub Production 分支白名单曾临时加入本功能分支，部署完成后已恢复为 main 与 feat/phase6-legacy-import。
+- Error Collector 健康 API 返回 healthy=true、status=collecting。当前订阅 session 已收到 SUBSCRIBE 确认并持续推进数据库覆盖水位；最终验收时 received_count=0，尚未有自然发生的实时错误通知，因此没有向生产 CPA 注入合成错误。真实 RESP AUTH/SUBSCRIBE/PONG/UNSUBSCRIBE 只读握手已通过。
+- OMC 历史导入核对：原始快照 17,170 条 Usage，完成 42 条与实时数据完全匹配的成功请求去重后保留 17,128 条；价格版本 112/112，错误事件 156/156。最终历史 Usage 为 3,290 条 priced、13,838 条 unpriced、2,761 条 is_error，成本 74,385,946,498 nanos；错误导入 inserted=156、skipped=0、failed=0、reconciled=156。实时 Usage 另有 50 条，其中 3 条 is_error；身份表与 Usage 主表均为 17,178 条。
+- 历史 Usage 与错误均映射到 legacy-oh-my-cpa-default；数据库内按同实例、同 auth_index、±120 秒窗口得到 703 组候选关联。Records API 对历史记录 eventId=16021 返回 1 条关联错误（HTTP 400、时间差 1ms），对 OMC 独有记录 eventId=17113 返回 1 条关联错误（HTTP 402、时间差 652ms）；两者 Provider/Model 均匹配、coverage=historical_import，响应未暴露 auth_index 或 auth_id。
+- 三条 OMC 错误事件发生在首次 Usage 订阅之后：其中一条关联到保留的 OMC 独有记录，另两条仅与 oracle-primary 实时请求匹配。为保持 source_instance_id 严格隔离，历史 OMC 错误仍保留在 legacy 来源，不跨实例关联到实时记录。
+- Rollup 日回填窗口调整为 120 天，重复项校正后刷新 444 个 daily groups；日汇总 request_count=17,178、error_count=2,764（历史 2,761 + 实时 3）、cost_nanos=74,385,946,498。48 小时小时汇总刷新 24 个 groups。
+- 当前剩余观察项：等待第一条自然发生的 CPA errors 实时消息，确认其从 errors Pub/Sub 到 cpa_error_events 的生产写入；不通过制造生产错误来做验收。
