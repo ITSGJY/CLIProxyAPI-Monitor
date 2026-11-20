@@ -379,3 +379,7 @@
 - 新增 `0008_resp_subscription.sql`，扩展 collector mode、pull attempt、Inbox 和 usage event transport 约束。
 - 增加 RESP fake-server 测试、PostgreSQL Inbox/Processor 集成测试、断线 gap 测试；44 项 Collector 测试、PostgreSQL、OMC 导入、typecheck、lint 和 Next.js build 全部通过。
 - 通过真实 Collector 进程 + 隔离 RESP fake CPA + PostgreSQL 17 完成端到端订阅验证：收到 1 条事件、Inbox 持久化 1 条、SIGTERM 后正常 UNSUBSCRIBE 并结束会话。
+
+## 2026-11-21
+
+- 精简首页仪表盘：移除价格覆盖率统计条和 Pricing Center 推广区块，并清理仅由该入口触发的旧版模型价格同步弹窗；独立 `/pricing` 页面的同步、价格管理、模型关联与成本试算功能保持不变。

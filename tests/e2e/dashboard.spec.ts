@@ -47,6 +47,8 @@ test("login and all dashboard pages render with JSON API responses", async ({ pa
 
   await login(page);
   await expect(page.getByRole("heading", { name: "Usage Dashboard" })).toBeVisible();
+  await expect(page.getByText("价格覆盖率", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Pricing Center · 模型价格体系" })).toHaveCount(0);
 
   await page.goto("/explore");
   await expect(page.getByRole("heading", { name: "数据探索" })).toBeVisible();

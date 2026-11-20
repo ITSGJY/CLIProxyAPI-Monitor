@@ -3,16 +3,9 @@
 import { useEffect, useState, useCallback, useMemo, useRef, startTransition, type FormEvent } from "react";
 import { ResponsiveContainer, LineChart, Line, Area, CartesianGrid, XAxis, YAxis, Tooltip, BarChart, Bar, Legend, ComposedChart, PieChart, Pie, Cell } from "recharts";
 import { formatCurrency, formatNumber, formatCompactNumber, formatNumberWithCommas, formatHourLabel } from "@/lib/utils";
-import { AlertTriangle, Info, LucideIcon, Activity, Save, RefreshCw, Moon, Sun, Pencil, Trash2, Maximize2, CalendarRange, X, DollarSign, Search, ChevronDown } from "lucide-react";
+import { AlertTriangle, Info, LucideIcon, Activity, Save, RefreshCw, Moon, Sun, Pencil, Trash2, Maximize2, CalendarRange, X, Search, ChevronDown } from "lucide-react";
 import type { ModelPrice, UsageOverview, UsageSeriesPoint } from "@/lib/types";
 import { Modal } from "@/app/components/Modal";
-
-// 同步状态类型定义
-type SyncStatus = 
-  | { type: 'idle' }
-  | { type: 'syncing'; message?: string }
-  | { type: 'success'; message: string; summary?: { total: number; updated: number; skipped: number; failed: number } }
-  | { type: 'error'; message: string };
 
 // 饼图颜色
 const PIE_COLORS = [
@@ -31,7 +24,6 @@ type OverviewAPIResponse = {
   meta?: OverviewMeta;
   filters?: { models: string[]; routes: string[]; names: string[]; providers?: string[]; serviceTiers?: string[] };
   costByCurrency?: Array<{currency:string;costNanos:number | null}>;
-  pricingCoverage?: {priced:number;unpriced:number;partial:number;rate:number};
 };
 
 type PriceForm = {
@@ -168,7 +160,6 @@ export default function DashboardPage() {
   const [bucketTimezone, setBucketTimezone] = useState<string | undefined>(undefined);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [overviewEmpty, setOverviewEmpty] = useState(false);
-  const [pricingCoverage, setPricingCoverage] = useState<OverviewAPIResponse["pricingCoverage"]>();
   const [costByCurrency, setCostByCurrency] = useState<OverviewAPIResponse["costByCurrency"]>([]);
   const [loadingOverview, setLoadingOverview] = useState(true);
   const [customPickerOpen, setCustomPickerOpen] = useState(false);
@@ -232,22 +223,6 @@ export default function DashboardPage() {
   const syncingRef = useRef(false);
   const skipOverviewCacheRef = useRef(false);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  const [syncingPrices, setSyncingPrices] = useState(false);
-  // const [pricesSyncStatus, setPricesSyncStatus] = useState<SyncStatus>({ type: 'idle' }); // 已禁用 toast 通知
-  // const pricesSyncStatusTimerRef = useRef<number | null>(null); // 已禁用 toast 通知
-  const [pricesSyncModalOpen, setPricesSyncModalOpen] = useState(false);
-  const [pricesSyncData, setPricesSyncData] = useState<{
-    summary?: { total: number; updated: number; skipped: number; failed: number };
-    details?: {
-      model: string;
-      status: string;
-      reason?: string;
-      matchedWith?: string;
-      selectionSummary?: string;
-      selectionDebug?: string;
-    }[];
-    error?: string;
-  } | null>(null);
 
   // 自动刷新状态
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -636,57 +611,6 @@ export default function DashboardPage() {
     loadPrices();
   }, [loadPrices]);
 
-  // 同步模型价格
-  const syncModelPrices = useCallback(async () => {
-    if (syncingPrices) return;
-
-    setSyncingPrices(true);
-    // setPricesSyncStatus({ type: 'syncing' }); // 已禁用 toast 通知
-    setPricesSyncData(null);
-    setPricesSyncModalOpen(true);
-
-    try {
-      const res = await fetch("/api/sync-model-prices", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({})
-      });
-
-      const data = await res.json();
-      setPricesSyncData(data);
-      
-      if (!res.ok) {
-        // setPricesSyncStatus({ 
-        //   type: 'error', 
-        //   message: `价格同步失败: ${data.error || res.statusText}` 
-        // }); // 已禁用 toast 通知
-      } else {
-        const { summary } = data;
-        // setPricesSyncStatus({ 
-        //   type: 'success', 
-        //   message: `已更新 ${summary.updated} 个模型价格，跳过 ${summary.skipped} 个，失败 ${summary.failed} 个`,
-        //   summary: summary
-        // }); // 已禁用 toast 通知
-        // 同步成功后重新加载价格列表
-        await loadPrices();
-
-        // 若价格存在变更，自动刷新一次面板以应用最新价格（并跳过 overview 缓存）
-        if (summary && Number(summary.updated) > 0) {
-          skipOverviewCacheRef.current = true;
-          setRefreshTrigger((prev) => prev + 1);
-        }
-      }
-    } catch (err) {
-      const errorMsg = (err as Error).message;
-      // setPricesSyncStatus({ 
-      //   type: 'error', 
-      //   message: `价格同步失败: ${errorMsg}` 
-      // }); // 已禁用 toast 通知
-      setPricesSyncData({ error: errorMsg });
-    } finally {
-      setSyncingPrices(false);
-    }
-  }, [syncingPrices, loadPrices]);
 
   // 页面加载时仅在当前会话首次进入时自动同步一次
   useEffect(() => {
@@ -848,7 +772,6 @@ export default function DashboardPage() {
         const data: OverviewAPIResponse = await res.json();
         if (!active) return;
         setOverview(data.overview ?? null);
-        setPricingCoverage(data.pricingCoverage);
         setCostByCurrency(data.costByCurrency ?? []);
         setBucketTimezone(data.timezone);
         setOverviewEmpty(Boolean(data.empty));
@@ -1179,13 +1102,6 @@ export default function DashboardPage() {
 
   return (
     <main className={`min-h-screen px-6 py-8 transition-colors ${darkMode ? "bg-slate-900 text-slate-100" : "bg-slate-50 text-slate-900"}`}>
-      {pricingCoverage ? (
-        <section className={`mb-5 flex flex-wrap items-center gap-4 rounded-xl border px-4 py-3 text-sm ${darkMode ? "border-slate-700 bg-slate-800/70" : "border-slate-200 bg-white"}`}>
-          <div><span className="text-xs text-slate-500">价格覆盖率</span><div className="text-lg font-semibold">{(pricingCoverage.rate * 100).toFixed(2)}%</div></div>
-          <div><span className="text-xs text-slate-500">已定价 / 未定价 / 部分</span><div className="font-medium">{pricingCoverage.priced} / {pricingCoverage.unpriced} / {pricingCoverage.partial}</div></div>
-          <div className="min-w-0 flex-1"><span className="text-xs text-slate-500">按币种累计成本（不跨币种相加）</span><div className="flex flex-wrap gap-3 font-medium">{(costByCurrency ?? []).map((item) => <span key={item.currency}>{item.currency} {item.costNanos === null ? "未定价" : (item.costNanos / 1e9).toFixed(6)}</span>)}</div></div>
-        </section>
-      ) : null}
       {overviewError ? (
         <div className="mb-6 flex items-start gap-3 rounded-xl border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm text-red-400">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
@@ -2221,34 +2137,6 @@ export default function DashboardPage() {
         )}
       </section>
 
-      {loadingOverview || !overviewData ? (
-        <div className="mt-8">
-          <Skeleton className="h-[500px] rounded-2xl" />
-        </div>
-      ) : (
-        <section className={`animate-card-float mt-8 rounded-2xl p-6 shadow-sm ring-1 ${darkMode ? "bg-slate-800/50 ring-slate-700" : "bg-white ring-slate-200"}`} style={{ animationDelay: "0.35s" }}>
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h2 className={`text-lg font-semibold ${darkMode ? "text-white" : "text-slate-900"}`}>Pricing Center · 模型价格体系</h2>
-              <p className={`mt-1 text-xs ${darkMode ? "text-slate-400" : "text-slate-500"}`}>
-                统一管理四桶 Token 价格、模型与渠道倍率、Tier、价格版本及成本试算。
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <a href="/pricing" className="inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500">
-                打开 Pricing Center
-              </a>
-              <button
-                onClick={syncModelPrices}
-                disabled={syncingPrices}
-                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition ${syncingPrices ? "cursor-not-allowed border-slate-700 bg-slate-800 text-slate-500" : "border-emerald-500/50 bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30"}`}
-              >
-                <DollarSign className={`h-4 w-4 ${syncingPrices ? "animate-pulse" : ""}`} />
-                {syncingPrices ? "同步中..." : "同步 models.dev"}
-              </button>
-            </div>
-          </div>
-        </section>      )}
 
       {/* 编辑价格模态框 */}
       <Modal
@@ -2870,125 +2758,6 @@ export default function DashboardPage() {
       )}
       */}
 
-      {/* 模型价格同步详情弹窗 */}
-      <Modal
-        isOpen={pricesSyncModalOpen}
-        onClose={() => setPricesSyncModalOpen(false)}
-        title="模型价格同步详情"
-        darkMode={darkMode}
-        className="max-w-3xl"
-      >
-        <div className="max-h-[70vh] overflow-auto">
-          {syncingPrices && (
-            <div className="flex items-center justify-center py-12">
-              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-500"></div>
-              <span className={`ml-4 text-base ${darkMode ? "text-slate-300" : "text-slate-600"}`}>正在同步价格...</span>
-            </div>
-          )}
-          
-          {pricesSyncData && !syncingPrices && (
-            <>
-              {/* 错误信息优先显示 */}
-              {pricesSyncData.error && (
-                <div className={`rounded-xl p-6 border-2 ${darkMode ? "bg-red-950/30 border-red-500/40" : "bg-red-50 border-red-300"}`}>
-                  <div className="flex items-start gap-3">
-                    <div className={`flex-shrink-0 p-2 rounded-lg ${darkMode ? "bg-red-900/40" : "bg-red-200"}`}>
-                      <AlertTriangle className={`h-6 w-6 ${darkMode ? "text-red-400" : "text-red-600"}`} />
-                    </div>
-                    <div className="flex-1">
-                      <h3 className={`text-lg font-semibold mb-2 ${darkMode ? "text-red-300" : "text-red-900"}`}>
-                        同步失败
-                      </h3>
-                      <p className={`text-sm leading-relaxed ${darkMode ? "text-red-200/90" : "text-red-800"}`}>
-                        {pricesSyncData.error}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* 摘要 */}
-              {pricesSyncData.summary && !pricesSyncData.error && (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                    <div className={`rounded-xl border p-4 ${darkMode ? "bg-slate-800/50 border-slate-700" : "bg-slate-50 border-slate-200"}`}>
-                      <p className={`text-xs mb-1 ${darkMode ? "text-slate-400" : "text-slate-500"}`}>总计</p>
-                      <p className={`text-2xl font-bold ${darkMode ? "text-white" : "text-slate-900"}`}>{pricesSyncData.summary.total}</p>
-                    </div>
-                    <div className="rounded-xl border p-4 bg-emerald-500/10 border-emerald-500/30">
-                      <p className="text-xs mb-1 text-emerald-400">已更新</p>
-                      <p className="text-2xl font-bold text-emerald-400">{pricesSyncData.summary.updated}</p>
-                    </div>
-                    <div className="rounded-xl border p-4 bg-yellow-500/10 border-yellow-500/30">
-                      <p className="text-xs mb-1 text-yellow-400">跳过</p>
-                      <p className="text-2xl font-bold text-yellow-400">{pricesSyncData.summary.skipped}</p>
-                    </div>
-                    <div className="rounded-xl border p-4 bg-red-500/10 border-red-500/30">
-                      <p className="text-xs mb-1 text-red-400">失败</p>
-                      <p className="text-2xl font-bold text-red-400">{pricesSyncData.summary.failed}</p>
-                    </div>
-                  </div>
-
-                  {/* 详细结果 */}
-                  {pricesSyncData.details && pricesSyncData.details.length > 0 && (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className={`border-b ${darkMode ? "border-slate-700" : "border-slate-300"}`}>
-                        <th className="py-2 px-2 text-left">模型</th>
-                        <th className="py-2 px-2 text-left">状态</th>
-                        <th className="py-2 px-2 text-left">匹配上游</th>
-                        <th className="py-2 px-2 text-left">详情</th>
-                        <th className="py-2 px-2 text-center w-12"> </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pricesSyncData.details.map((d, i) => (
-                        <tr key={i} className={`border-b ${darkMode ? "border-slate-700/50" : "border-slate-200"}`}>
-                          <td className="py-1.5 px-2 font-mono">{d.model}</td>
-                          <td className="py-1.5 px-2">
-                            <span className={`inline-flex items-center justify-center w-6 h-4.5 rounded text-xs ${
-                              d.status === "updated" ? "bg-emerald-500/20 text-emerald-400" :
-                              d.status === "skipped" ? "bg-yellow-500/20 text-yellow-400" :
-                              "bg-red-500/20 text-red-400"
-                            }`}>
-                              {d.status === "updated" ? "✓" : d.status === "skipped" ? "⊘" : "✗"}
-                            </span>
-                          </td>
-                          <td className="py-1.5 px-2 font-mono text-emerald-400">{d.matchedWith || "-"}</td>
-                          <td className="py-1.5 px-2 text-slate-500 max-w-xs" title={d.reason}>
-                            <div className="truncate">{d.reason || "-"}</div>
-                          </td>
-                          <td className="py-1.5 px-2 text-center">
-                            {d.selectionDebug ? (
-                              <button
-                                type="button"
-                                title={d.selectionDebug}
-                                aria-label="查看详细说明"
-                                className={`inline-flex h-5 w-5 cursor-help items-center justify-center rounded-full border text-[11px] font-semibold transition ${
-                                  darkMode
-                                    ? "border-slate-600 text-slate-300 hover:border-slate-400 hover:bg-slate-700"
-                                    : "border-slate-300 text-slate-600 hover:border-slate-400 hover:bg-slate-100"
-                                }`}
-                              >
-                                ?
-                              </button>
-                            ) : (
-                              <span className={`text-xs ${darkMode ? "text-slate-600" : "text-slate-400"}`}>-</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </Modal>
     </main>
   );
 }
