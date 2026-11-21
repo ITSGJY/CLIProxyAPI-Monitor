@@ -621,11 +621,13 @@ export default function DashboardPage() {
           params.set("skipCache", "1");
           skipOverviewCacheRef.current = false;
         }
+        if (refreshRequest) params.set("refreshSource", refreshRequest.source);
 
         const filterParams = new URLSearchParams(params);
         filterParams.delete("page");
         filterParams.delete("pageSize");
         filterParams.delete("skipCache");
+        filterParams.delete("refreshSource");
         const filterKey = filterParams.toString();
         if (!refreshRequest && lastOverviewCountRef.current?.filterKey !== filterKey) setRefreshSummary(null);
         const res = await fetch(`/api/overview?${params.toString()}`, { cache: "no-store", signal: controller.signal });
