@@ -10,11 +10,12 @@ import {
   type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent
 } from "react";
-import { ArrowDown, ArrowUp, RefreshCw, SlidersHorizontal, X, CalendarRange, Columns3, GripVertical, Download, FileJson, Search, ChevronDown } from "lucide-react";
+import { ArrowDown, ArrowUp, RefreshCw, SlidersHorizontal, X, CalendarRange, Columns3, GripVertical, Download, FileJson, Search } from "lucide-react";
 import RecordDetailsDrawer from "@/app/components/RecordDetailsDrawer";
 import { formatNumberWithCommas } from "@/lib/utils";
 import { DayPicker, type DateRange } from "react-day-picker";
 import "react-day-picker/dist/style.css";
+import { useAutoRefresh } from "@/app/components/AutoRefreshContext";
 import { enUS, ja, ko, zhCN } from "date-fns/locale";
 
 type UsageRecord = {
@@ -387,8 +388,8 @@ export default function RecordsPage() {
   const refreshStatusTimerRef = useRef<number | null>(null);
   const [refreshStatusClosing, setRefreshStatusClosing] = useState(false);
 
-  // 自动刷新状态：与首页共享刷新间隔设置，开关本身不持久化
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  // 自动刷新由仪表盘统一控制；Records 仅继承开关与频率。
+  const { autoRefresh } = useAutoRefresh();
   const [refreshPreset, setRefreshPreset] = useState("60");
   const [customIntervalInput, setCustomIntervalInput] = useState("60");
   const [customIntervalUnit, setCustomIntervalUnit] = useState<"s" | "m">("s");
@@ -396,12 +397,6 @@ export default function RecordsPage() {
   const autoRefreshWorkerRef = useRef<Worker | null>(null);
   const refreshRecordsRef = useRef<() => Promise<void>>(async () => {});
   const pendingImmediateAutoRefreshRef = useRef(false);
-  const tickBaseTimeRef = useRef(0);
-  const tickIntervalMsRef = useRef(60000);
-  const [showCountdownTip, setShowCountdownTip] = useState(false);
-  const [countdownText, setCountdownText] = useState("");
-  const hoverCountdownTimerRef = useRef<number | null>(null);
-
   const [models, setModels] = useState<string[]>([]);
   const [routes, setRoutes] = useState<string[]>([]);
   const [sources, setSources] = useState<string[]>([]);
@@ -764,7 +759,7 @@ export default function RecordsPage() {
 
   refreshRecordsRef.current = refreshRecords;
 
-  // 与首页共享刷新频率配置，但每个页面的自动刷新开关独立。
+  // 刷新频率沿用仪表盘保存的设置，自动刷新开关由共享状态控制。
   useEffect(() => {
     const saved = window.localStorage.getItem("autoRefreshSettings");
     if (saved) {
@@ -778,23 +773,13 @@ export default function RecordsPage() {
     setAutoRefreshSettingsReady(true);
   }, []);
 
-  useEffect(() => {
-    if (!autoRefreshSettingsReady) return;
-    window.localStorage.setItem("autoRefreshSettings", JSON.stringify({
-      preset: refreshPreset,
-      custom: customIntervalInput,
-      unit: customIntervalUnit
-    }));
-  }, [autoRefreshSettingsReady, refreshPreset, customIntervalInput, customIntervalUnit]);
-
-  // 预加载真实 Worker；回调通过 ref 获取最新筛选条件下的 refreshRecords。
+  // Records 页面只在自身挂载期间运行 Worker；离开页面后自动停止。
   useEffect(() => {
     if (typeof window === "undefined" || typeof Worker === "undefined") return;
     const worker = new Worker("/auto-refresh-worker.js");
     autoRefreshWorkerRef.current = worker;
     worker.onmessage = (event: MessageEvent) => {
       if (event.data.type === "tick") {
-        tickBaseTimeRef.current = Date.now();
         void refreshRecordsRef.current();
       }
     };
@@ -807,34 +792,27 @@ export default function RecordsPage() {
 
   useEffect(() => {
     const worker = autoRefreshWorkerRef.current;
-    if (!worker) return;
+    if (!worker || !autoRefreshSettingsReady) return;
     if (autoRefresh) {
       const intervalMs = refreshPreset === "custom"
         ? Math.max(customIntervalUnit === "m" ? 1 : 5, Number(customIntervalInput) || (customIntervalUnit === "m" ? 1 : 60)) * (customIntervalUnit === "m" ? 60_000 : 1000)
         : Number(refreshPreset) * 1000;
-      tickIntervalMsRef.current = intervalMs;
-      tickBaseTimeRef.current = Date.now();
       worker.postMessage({ type: "start", interval: intervalMs });
     } else {
       worker.postMessage({ type: "stop" });
     }
-  }, [autoRefresh, refreshPreset, customIntervalInput, customIntervalUnit]);
+  }, [autoRefresh, autoRefreshSettingsReady, refreshPreset, customIntervalInput, customIntervalUnit]);
 
-  // 若开启时页面仍在加载，等当前查询结束后补做首次刷新，避免丢失即时刷新。
+  // 进入 Records 时若仪表盘已开启自动刷新，先立即更新一次。
+  useEffect(() => {
+    pendingImmediateAutoRefreshRef.current = autoRefresh;
+  }, [autoRefresh]);
+
   useEffect(() => {
     if (!autoRefresh || loading || !pendingImmediateAutoRefreshRef.current) return;
     pendingImmediateAutoRefreshRef.current = false;
-    tickBaseTimeRef.current = Date.now();
     void refreshRecords();
   }, [autoRefresh, loading, refreshRecords]);
-
-  useEffect(() => () => {
-    if (hoverCountdownTimerRef.current !== null) {
-      window.clearInterval(hoverCountdownTimerRef.current);
-      hoverCountdownTimerRef.current = null;
-    }
-  }, []);
-
   useEffect(() => {
     resetAndFetch(true);
   }, [resetAndFetch]);
@@ -1214,96 +1192,6 @@ export default function RecordsPage() {
           <p className="text-base text-slate-400">展示模型调用明细</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-sm text-slate-300">
-          <div className="relative">
-            <span className={"pointer-events-none absolute -top-8 left-1/2 z-50 whitespace-nowrap rounded bg-slate-700 px-2 py-0.5 text-xs text-emerald-200 transition-opacity duration-150 " + (showCountdownTip ? "opacity-100" : "opacity-0")}>
-              下次刷新: {countdownText}
-            </span>
-            <div className={"flex items-center overflow-hidden rounded-lg border text-sm font-medium transition-colors duration-200 " + (autoRefresh ? "border-emerald-500/40 bg-emerald-600/15" : "border-slate-700 bg-slate-800 hover:border-slate-500")}>
-              <button
-                type="button"
-                onClick={() => {
-                  const next = !autoRefresh;
-                  pendingImmediateAutoRefreshRef.current = next;
-                  setAutoRefresh(next);
-                }}
-                onMouseEnter={() => {
-                  if (!autoRefresh) return;
-                  const update = () => {
-                    const elapsed = Date.now() - tickBaseTimeRef.current;
-                    const remaining = Math.max(0, tickIntervalMsRef.current - elapsed);
-                    const seconds = Math.ceil(remaining / 1000);
-                    setCountdownText(seconds >= 60
-                      ? String(Math.floor(seconds / 60)) + "m " + String(seconds % 60) + "s"
-                      : String(seconds) + "s");
-                  };
-                  update();
-                  setShowCountdownTip(true);
-                  hoverCountdownTimerRef.current = window.setInterval(update, 500);
-                }}
-                onMouseLeave={() => {
-                  setShowCountdownTip(false);
-                  if (hoverCountdownTimerRef.current !== null) {
-                    window.clearInterval(hoverCountdownTimerRef.current);
-                    hoverCountdownTimerRef.current = null;
-                  }
-                }}
-                className={"flex items-center gap-1.5 px-3 py-2 transition-colors " + (autoRefresh ? "text-emerald-400" : "text-slate-300")}
-              >
-                <span className={"inline-block h-2 w-2 flex-shrink-0 rounded-full border-2 transition-all duration-200 " + (autoRefresh ? "border-emerald-400 bg-emerald-400" : "border-slate-500")} />
-                自动刷新
-              </button>
-              <div className={"flex items-center overflow-hidden transition-opacity duration-200 " + (autoRefresh ? "opacity-100" : "pointer-events-none max-w-0 opacity-0")}>
-                <div className="my-1 w-px flex-shrink-0 self-stretch bg-emerald-500/30" />
-                <div className={"relative flex flex-shrink-0 items-center overflow-hidden " + (refreshPreset === "custom" ? "max-w-6" : "max-w-44")}>
-                  <select
-                    value={refreshPreset}
-                    data-testid="auto-refresh-interval"
-                    onChange={(event) => setRefreshPreset(event.target.value)}
-                    className={"appearance-none py-2 pl-2 text-xs outline-none " + (refreshPreset === "custom" ? "pr-4" : "pr-6") + " text-emerald-300"}
-                    style={{ backgroundColor: "transparent", color: refreshPreset === "custom" ? "transparent" : undefined }}
-                  >
-                    <option value="60" style={{ backgroundColor: "#022c22", color: "#d1fae5" }}>1 分钟</option>
-                    <option value="300" style={{ backgroundColor: "#022c22", color: "#d1fae5" }}>5 分钟</option>
-                    <option value="900" style={{ backgroundColor: "#022c22", color: "#d1fae5" }}>15 分钟</option>
-                    <option value="1800" style={{ backgroundColor: "#022c22", color: "#d1fae5" }}>30 分钟</option>
-                    <option value="3600" style={{ backgroundColor: "#022c22", color: "#d1fae5" }}>60 分钟</option>
-                    <option value="custom" style={{ backgroundColor: "#022c22", color: "#d1fae5" }}>自定义...</option>
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-1 h-3 w-3 text-emerald-400" />
-                </div>
-                <div className={"flex items-center overflow-hidden transition-opacity duration-200 " + (refreshPreset === "custom" ? "opacity-100" : "pointer-events-none max-w-0 opacity-0")}>
-                  <div className="my-1 w-px flex-shrink-0 self-stretch bg-emerald-500/30" />
-                  <input
-                    type="number"
-                    min={customIntervalUnit === "m" ? "1" : "5"}
-                    data-testid="auto-refresh-custom-interval"
-                    value={customIntervalInput}
-                    onChange={(event) => setCustomIntervalInput(event.target.value)}
-                    className="w-14 flex-shrink-0 appearance-none py-2 pl-2 pr-1 text-xs text-emerald-300 outline-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                    style={{ backgroundColor: "transparent" }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (customIntervalUnit === "s") {
-                        const minutes = Math.max(1, Math.floor((Number(customIntervalInput) || 60) / 60));
-                        setCustomIntervalInput(String(minutes));
-                        setCustomIntervalUnit("m");
-                      } else {
-                        const seconds = Math.min(3600, (Number(customIntervalInput) || 1) * 60);
-                        setCustomIntervalInput(String(seconds));
-                        setCustomIntervalUnit("s");
-                      }
-                    }}
-                    className="flex-shrink-0 cursor-pointer pr-2 text-xs text-emerald-400 transition-colors hover:text-emerald-300"
-                    title="点击切换秒/分"
-                  >
-                    {customIntervalUnit === "s" ? "秒" : "分"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
           <button
             onClick={refreshRecords}
             disabled={loading}

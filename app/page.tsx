@@ -6,6 +6,7 @@ import { formatCurrency, formatNumber, formatCompactNumber, formatNumberWithComm
 import { AlertTriangle, Info, LucideIcon, Activity, Save, RefreshCw, Moon, Sun, Pencil, Trash2, Maximize2, CalendarRange, X, Search, ChevronDown } from "lucide-react";
 import type { ModelPrice, UsageOverview, UsageSeriesPoint } from "@/lib/types";
 import { Modal } from "@/app/components/Modal";
+import { useAutoRefresh } from "@/app/components/AutoRefreshContext";
 
 // 饼图颜色
 const PIE_COLORS = [
@@ -121,6 +122,7 @@ function buildHourlyLineStyle(pointCount: number, baseStrokeWidth: number) {
 }
 
 export default function DashboardPage() {
+  const { autoRefresh, setAutoRefresh } = useAutoRefresh();
   const [mounted, setMounted] = useState(false);
   const [prices, setPrices] = useState<ModelPrice[]>([]);
 
@@ -215,8 +217,6 @@ export default function DashboardPage() {
   const skipOverviewCacheRef = useRef(false);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
-  // 自动刷新状态
-  const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshPreset, setRefreshPreset] = useState("60"); // "60"|"300"|"900"|"1800"|"3600"|"custom"
   const [customIntervalInput, setCustomIntervalInput] = useState("60");
   const [customIntervalUnit, setCustomIntervalUnit] = useState<"s" | "m">("s");

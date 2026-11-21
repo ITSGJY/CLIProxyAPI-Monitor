@@ -216,8 +216,9 @@ test("dashboard manual and automatic refreshes show transient toast counts", asy
   await expect(page.getByTestId("dashboard-refresh-status")).toContainText("暂无新增数据");
   await expect(page.getByTestId("dashboard-refresh-status")).toBeHidden({ timeout: 12000 });
 });
-test("records page automatic refreshes show transient counts and stop cleanly", async ({ page }) => {
-  let automaticRefreshCount = 0;
+test("records page follows the dashboard auto-refresh state and interval", async ({ page }) => {
+  let dashboardAutoRefreshCount = 0;
+  let recordsAutoRefreshCount = 0;
   const syncRequests: string[] = [];
 
   page.on("request", (request) => {
@@ -225,55 +226,117 @@ test("records page automatic refreshes show transient counts and stop cleanly", 
     if (url.pathname === "/api/sync") syncRequests.push(request.url());
   });
 
+  await page.route("**/api/overview?*", (route) => {
+    const url = new URL(route.request().url());
+    const isAutoRefresh = url.searchParams.get("refreshSource") === "auto";
+    if (isAutoRefresh) dashboardAutoRefreshCount += 1;
+    const totalRequests = isAutoRefresh ? 108 : 100;
+    return route.fulfill({
+      status: 200,
+      json: {
+        overview: {
+          totalRequests,
+          totalTokens: totalRequests * 10,
+          totalInputTokens: totalRequests * 6,
+          totalOutputTokens: totalRequests * 4,
+          totalReasoningTokens: 0,
+          totalCachedTokens: 0,
+          successCount: totalRequests,
+          failureCount: 0,
+          successRate: 1,
+          totalCost: null,
+          models: [],
+          byDay: [],
+          byHour: []
+        },
+        empty: false,
+        days: 14,
+        timezone: "Asia/Shanghai",
+        lastSyncAt: null,
+        meta: { page: 1, pageSize: 500, totalModels: 0, totalPages: 1 },
+        filters: { models: [], routes: [], names: [], providers: [], serviceTiers: [] },
+        costByCurrency: [],
+        pricingCoverage: { priced: 0, unpriced: 0, partial: 0, rate: 1 }
+      }
+    });
+  });
   await page.route("**/api/records?*", (route) => {
     const url = new URL(route.request().url());
     const isRefresh = url.searchParams.get("refresh") === "1";
-    const totalCount = isRefresh ? 105 : 100;
-    if (isRefresh) automaticRefreshCount += 1;
+    if (isRefresh) recordsAutoRefreshCount += 1;
     return route.fulfill({
       status: 200,
       json: {
         items: [],
         nextCursor: null,
-        totalCount,
+        totalCount: isRefresh ? 105 : 100,
         filters: { models: [], routes: [], sources: [], providers: [], serviceTiers: [] }
       }
     });
   });
+  await page.route("**/api/prices", (route) => route.fulfill({ status: 200, json: [] }));
+  await page.route("**/api/management-url", (route) => route.fulfill({ status: 200, json: { url: "http://127.0.0.1:8317/management.html" } }));
+  await page.route("**/api/usage-statistics-enabled", (route) => route.fulfill({ status: 200, json: { "usage-statistics-enabled": false } }));
 
+  const initialOverview = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/overview" && !url.searchParams.has("refreshSource");
+  });
   await login(page);
+  expect((await initialOverview).status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "Usage Dashboard" })).toBeVisible();
+
+  await page.getByTestId("auto-refresh-interval").selectOption("custom");
+  await page.getByTestId("auto-refresh-custom-interval").fill("5");
+  await expect.poll(() => page.evaluate(() => {
+    const saved = JSON.parse(window.localStorage.getItem("autoRefreshSettings") || "{}");
+    return saved.custom;
+  })).toBe("5");
+
+  const dashboardImmediateRefresh = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/overview" && url.searchParams.get("refreshSource") === "auto";
+  });
+  await page.getByRole("button", { name: "自动刷新", exact: true }).click();
+  expect((await dashboardImmediateRefresh).status()).toBe(200);
+  expect(dashboardAutoRefreshCount).toBe(1);
+
   const initialRecords = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return url.pathname === "/api/records" && !url.searchParams.has("refresh");
   });
-  await page.goto("/records");
-  expect((await initialRecords).status()).toBe(200);
-  await expect(page.getByRole("heading", { name: "调用记录" })).toBeVisible();
-  await expect.poll(() => page.workers().some((worker) => new URL(worker.url()).pathname === "/auto-refresh-worker.js")).toBe(true);
-  await expect(page.getByRole("button", { name: "刷新", exact: true })).toBeEnabled();
-
-  await page.getByTestId("auto-refresh-interval").selectOption("custom");
-  await page.getByTestId("auto-refresh-custom-interval").fill("5");
-
-  const immediateAutoRefresh = page.waitForResponse((response) => {
+  const immediateRecordsRefresh = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return url.pathname === "/api/records" && url.searchParams.get("refresh") === "1";
   });
-  await page.getByRole("button", { name: "自动刷新", exact: true }).click();
-  expect((await immediateAutoRefresh).status()).toBe(200);
+  await page.getByRole("link", { name: "调用记录" }).click();
+  expect((await initialRecords).status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "调用记录" })).toBeVisible();
+  expect((await immediateRecordsRefresh).status()).toBe(200);
   await expect(page.getByTestId("records-refresh-status")).toContainText("新增 5 条记录");
+  await expect(page.getByRole("button", { name: "自动刷新" })).toHaveCount(0);
+  await expect(page.getByTestId("auto-refresh-interval")).toHaveCount(0);
 
-  const periodicAutoRefresh = page.waitForResponse((response) => {
+  const periodicRecordsRefresh = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return url.pathname === "/api/records" && url.searchParams.get("refresh") === "1";
   }, { timeout: 12000 });
-  expect((await periodicAutoRefresh).status()).toBe(200);
-  expect(automaticRefreshCount).toBe(2);
+  expect((await periodicRecordsRefresh).status()).toBe(200);
+  expect(recordsAutoRefreshCount).toBe(2);
   await expect(page.getByTestId("records-refresh-status")).toContainText("暂无新增数据");
 
-  await page.getByRole("button", { name: "自动刷新", exact: true }).click();
+  await page.getByRole("link", { name: "仪表盘" }).click();
+  await expect(page.getByRole("heading", { name: "Usage Dashboard" })).toBeVisible();
+  await page.getByRole("button", { name: "自动刷新" }).click();
+
+  const recordsAfterDisable = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/records" && !url.searchParams.has("refresh");
+  });
+  await page.getByRole("link", { name: "调用记录" }).click();
+  expect((await recordsAfterDisable).status()).toBe(200);
   await page.waitForTimeout(5500);
-  expect(automaticRefreshCount).toBe(2);
+  expect(recordsAutoRefreshCount).toBe(2);
   expect(syncRequests).toEqual([]);
 });
 
