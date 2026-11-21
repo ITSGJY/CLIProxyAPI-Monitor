@@ -155,7 +155,12 @@ test("dashboard refresh summary reports manual and automatic request-count chang
   await page.route("**/api/management-url", (route) => route.fulfill({ status: 200, json: { url: "http://127.0.0.1:8317/management.html" } }));
   await page.route("**/api/usage-statistics-enabled", (route) => route.fulfill({ status: 200, json: { "usage-statistics-enabled": false } }));
 
+  const initialOverview = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/overview" && !url.searchParams.has("refreshSource");
+  });
   await login(page);
+  expect((await initialOverview).status()).toBe(200);
   await expect(page.getByRole("heading", { name: "Usage Dashboard" })).toBeVisible();
   await expect(page.getByRole("button", { name: "刷新数据" })).toBeEnabled();
 
