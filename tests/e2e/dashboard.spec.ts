@@ -111,17 +111,18 @@ test("login and all dashboard pages render with JSON API responses", async ({ pa
   });
 });
 
-test("dashboard refresh summary reports manual and automatic request-count changes", async ({ page }) => {
+test("dashboard manual and automatic refreshes show transient toast counts", async ({ page }) => {
 
   await page.route("**/auto-refresh-worker.js", (route) => route.fulfill({
     status: 200,
     contentType: "application/javascript",
     body: 'let timer; self.onmessage = (event) => { if (event.data?.type === "start") { clearTimeout(timer); timer = setTimeout(() => self.postMessage({ type: "tick" }), 25); } else if (event.data?.type === "stop") { clearTimeout(timer); } };'
   }));
+  let manualRefreshCount = 0;
   await page.route("**/api/overview?*", (route) => {
     const url = new URL(route.request().url());
     const refreshSource = url.searchParams.get("refreshSource");
-    const totalRequests = refreshSource === "manual" ? 103 : refreshSource === "auto" ? 108 : 100;
+    const totalRequests = refreshSource === "manual" ? (manualRefreshCount++ === 0 ? 103 : 108) : refreshSource === "auto" ? 108 : 100;
     return route.fulfill({
       status: 200,
       json: {
@@ -170,7 +171,8 @@ test("dashboard refresh summary reports manual and automatic request-count chang
   });
   await page.getByRole("button", { name: "刷新数据" }).click();
   expect((await manualRefresh).status()).toBe(200);
-  await expect(page.getByTestId("dashboard-refresh-summary")).toHaveText("手动刷新 · 请求数变化 +3 条");
+  await expect(page.getByTestId("dashboard-refresh-status")).toHaveText("手动刷新完成，新增 3 条请求");
+  await expect(page.getByTestId("dashboard-refresh-summary")).toHaveCount(0);
 
   const automaticRefresh = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -178,8 +180,18 @@ test("dashboard refresh summary reports manual and automatic request-count chang
   });
   await page.getByRole("button", { name: "自动刷新", exact: true }).click();
   expect((await automaticRefresh).status()).toBe(200);
-  await expect(page.getByTestId("dashboard-refresh-summary")).toHaveText("自动刷新 · 请求数变化 +5 条");
+  await expect(page.getByTestId("dashboard-refresh-status")).toHaveText("自动刷新完成，新增 5 条请求");
   await page.getByRole("button", { name: "自动刷新", exact: true }).click();
+
+  await expect(page.getByRole("button", { name: "刷新数据" })).toBeEnabled();
+  const noNewDataRefresh = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/overview" && url.searchParams.get("refreshSource") === "manual";
+  });
+  await page.getByRole("button", { name: "刷新数据" }).click();
+  expect((await noNewDataRefresh).status()).toBe(200);
+  await expect(page.getByTestId("dashboard-refresh-status")).toHaveText("手动刷新完成，暂无新增数据");
+  await expect(page.getByTestId("dashboard-refresh-status")).toBeHidden({ timeout: 12000 });
 });
 
 test("records page exposes configurable event columns, request details and filtered exports", async ({ page }) => {
@@ -337,7 +349,16 @@ test("records page exposes configurable event columns, request details and filte
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   expect((await refreshResponse).status()).toBe(200);
-  await expect(page.getByTestId("records-refresh-status")).toContainText("刷新完成，记录数变化 +3 条");
+  await expect(page.getByTestId("records-refresh-status")).toHaveText("刷新完成，新增 3 条记录");
+
+  await expect(page.getByRole("button", { name: "刷新", exact: true })).toBeEnabled();
+  const noNewRecordsRefresh = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/records" && url.searchParams.get("includeTotal") === "1" && url.searchParams.get("refresh") === "1";
+  });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  expect((await noNewRecordsRefresh).status()).toBe(200);
+  await expect(page.getByTestId("records-refresh-status")).toHaveText("刷新完成，暂无新增数据");
 
   await expect(page.getByRole("columnheader", { name: /Cache Read/ })).toBeVisible();
   await expect(page.getByRole("columnheader", { name: /Cache Write/ })).toBeVisible();

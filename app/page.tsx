@@ -26,11 +26,7 @@ type OverviewAPIResponse = {
   costByCurrency?: Array<{currency:string;costNanos:number | null}>;
 };
 
-type DashboardRefreshSummary = {
-  source: "manual" | "auto";
-  totalRequests: number;
-  delta: number | null;
-};
+
 
 type PriceForm = {
   model: string;
@@ -199,7 +195,9 @@ export default function DashboardPage() {
   const [saveStatusClosing, setSaveStatusClosing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [refreshSummary, setRefreshSummary] = useState<DashboardRefreshSummary | null>(null);
+  const [refreshStatus, setRefreshStatus] = useState<string | null>(null);
+  const refreshStatusTimerRef = useRef<number | null>(null);
+  const [refreshStatusClosing, setRefreshStatusClosing] = useState(false);
   const refreshRequestSequenceRef = useRef(0);
   const refreshRequestRef = useRef<{ source: "manual" | "auto"; id: number } | null>(null);
   const lastOverviewCountRef = useRef<{ filterKey: string; totalRequests: number } | null>(null);
@@ -439,6 +437,35 @@ export default function DashboardPage() {
     };
   }, [saveStatus, closeSaveStatus]);
 
+  const closeRefreshStatus = useCallback(() => {
+    if (refreshStatusTimerRef.current !== null) {
+      window.clearTimeout(refreshStatusTimerRef.current);
+      refreshStatusTimerRef.current = null;
+    }
+    setRefreshStatusClosing(true);
+    setTimeout(() => {
+      setRefreshStatus(null);
+      setRefreshStatusClosing(false);
+    }, 400);
+  }, []);
+
+  useEffect(() => {
+    if (!refreshStatus) return;
+    if (refreshStatusTimerRef.current !== null) {
+      window.clearTimeout(refreshStatusTimerRef.current);
+    }
+    refreshStatusTimerRef.current = window.setTimeout(() => {
+      closeRefreshStatus();
+      refreshStatusTimerRef.current = null;
+    }, 10000);
+    return () => {
+      if (refreshStatusTimerRef.current !== null) {
+        window.clearTimeout(refreshStatusTimerRef.current);
+        refreshStatusTimerRef.current = null;
+      }
+    };
+  }, [refreshStatus, closeRefreshStatus]);
+
   // 自动清除 pricesSyncStatus toast - 已禁用
   /*
   useEffect(() => {
@@ -475,7 +502,12 @@ export default function DashboardPage() {
   // 刷新只重新读取 PostgreSQL；CPA 采集由后台 Collector 独立持续执行
   const refreshOverview = useCallback((source: "manual" | "auto" = "manual") => {
     refreshRequestRef.current = { source, id: ++refreshRequestSequenceRef.current };
-    setRefreshSummary(null);
+    if (refreshStatusTimerRef.current !== null) {
+      window.clearTimeout(refreshStatusTimerRef.current);
+      refreshStatusTimerRef.current = null;
+    }
+    setRefreshStatus(null);
+    setRefreshStatusClosing(false);
     skipOverviewCacheRef.current = true;
     setRefreshTrigger((prev) => prev + 1);
   }, []);
@@ -629,7 +661,14 @@ export default function DashboardPage() {
         filterParams.delete("skipCache");
         filterParams.delete("refreshSource");
         const filterKey = filterParams.toString();
-        if (!refreshRequest && lastOverviewCountRef.current?.filterKey !== filterKey) setRefreshSummary(null);
+        if (!refreshRequest && lastOverviewCountRef.current?.filterKey !== filterKey) {
+          if (refreshStatusTimerRef.current !== null) {
+            window.clearTimeout(refreshStatusTimerRef.current);
+            refreshStatusTimerRef.current = null;
+          }
+          setRefreshStatus(null);
+          setRefreshStatusClosing(false);
+        }
         const res = await fetch(`/api/overview?${params.toString()}`, { cache: "no-store", signal: controller.signal });
 
         if (!res.ok) {
@@ -652,11 +691,17 @@ export default function DashboardPage() {
         const totalRequests = Number(data.overview?.totalRequests ?? 0);
         const previousSnapshot = lastOverviewCountRef.current;
         if (refreshRequest) {
-          setRefreshSummary({
-            source: refreshRequest.source,
-            totalRequests,
-            delta: previousSnapshot?.filterKey === filterKey ? totalRequests - previousSnapshot.totalRequests : null
-          });
+          const delta = previousSnapshot?.filterKey === filterKey ? totalRequests - previousSnapshot.totalRequests : null;
+          const label = refreshRequest.source === "auto" ? "自动刷新完成" : "手动刷新完成";
+          const message = delta === null
+            ? `${label}，当前共 ${formatNumberWithCommas(totalRequests)} 条请求`
+            : delta > 0
+              ? `${label}，新增 ${formatNumberWithCommas(delta)} 条请求`
+              : delta === 0
+                ? `${label}，暂无新增数据`
+                : `${label}，请求数减少 ${formatNumberWithCommas(Math.abs(delta))} 条`;
+          setRefreshStatus(message);
+          setRefreshStatusClosing(false);
           if (refreshRequestRef.current?.id === refreshRequest.id) refreshRequestRef.current = null;
         }
         lastOverviewCountRef.current = { filterKey, totalRequests };
@@ -1175,18 +1220,7 @@ export default function DashboardPage() {
                 最近入库: {lastSyncTime.toLocaleTimeString()}
               </span>
             )}
-            {refreshSummary && (
-              <span
-                role="status"
-                aria-live="polite"
-                data-testid="dashboard-refresh-summary"
-                className={`text-xs ${darkMode ? "text-emerald-300" : "text-emerald-700"}`}
-              >
-                {refreshSummary.source === "auto" ? "自动刷新" : "手动刷新"} · {refreshSummary.delta === null
-                  ? `当前筛选共 ${formatNumberWithCommas(refreshSummary.totalRequests)} 条请求`
-                  : `请求数变化 ${refreshSummary.delta > 0 ? "+" : ""}${formatNumberWithCommas(refreshSummary.delta)} 条`}
-              </span>
-            )}
+
           </div>
         </div>
       </header>
@@ -2620,6 +2654,27 @@ export default function DashboardPage() {
           <div className="flex items-center gap-2.5">
             <span className="text-xl animate-emoji-pop">✅</span>
             <span className="text-sm font-medium">{saveStatus}</span>
+          </div>
+        </div>
+      )}
+
+      {refreshStatus && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="dashboard-refresh-status"
+          onClick={() => closeRefreshStatus()}
+          className={`fixed right-6 top-48 z-50 max-w-[320px] cursor-pointer rounded-lg border px-4 py-3 shadow-lg transition-opacity hover:opacity-90 ${
+            refreshStatusClosing ? "animate-toast-out" : "animate-toast-in"
+          } ${
+            darkMode
+              ? "border-green-500/40 bg-green-900/80 text-green-100"
+              : "border-green-400 bg-green-50 text-green-900"
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="text-xl animate-emoji-pop">{refreshStatus.includes("暂无新增数据") ? "ℹ️" : "✅"}</span>
+            <span className="text-sm font-medium">{refreshStatus}</span>
           </div>
         </div>
       )}

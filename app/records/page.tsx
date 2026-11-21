@@ -680,7 +680,12 @@ export default function RecordsPage() {
             const delta = previousTotal === null || totalRecordsFilterKeyRef.current !== filterKey ? null : data.totalCount - previousTotal;
             setRefreshStatus(delta === null
               ? `刷新完成，当前筛选共 ${formatNumberWithCommas(data.totalCount)} 条记录`
-              : `刷新完成，记录数变化 ${delta > 0 ? "+" : ""}${formatNumberWithCommas(delta)} 条`);
+              : delta > 0
+                ? `刷新完成，新增 ${formatNumberWithCommas(delta)} 条记录`
+                : delta === 0
+                  ? "刷新完成，暂无新增数据"
+                  : `刷新完成，记录数减少 ${formatNumberWithCommas(Math.abs(delta))} 条`);
+            setRefreshStatusClosing(false);
           }
           totalRecordsRef.current = data.totalCount;
           totalRecordsFilterKeyRef.current = filterKey;
@@ -697,6 +702,10 @@ export default function RecordsPage() {
     [buildParams]
   );
   const closeRefreshStatus = useCallback(() => {
+    if (refreshStatusTimerRef.current !== null) {
+      window.clearTimeout(refreshStatusTimerRef.current);
+      refreshStatusTimerRef.current = null;
+    }
     setRefreshStatusClosing(true);
     setTimeout(() => {
       setRefreshStatus(null);
