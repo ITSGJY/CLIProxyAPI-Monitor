@@ -273,11 +273,14 @@ jobs:
             -e PASSWORD=phase7-container-smoke-password \
             -e CRON_SECRET=phase7-container-smoke-cron "$IMAGE"
           for attempt in $(seq 1 45); do
-            if curl -fsS http://127.0.0.1:3000/login >/dev/null; then exit 0; fi
+            if curl -fsS http://127.0.0.1:3000/login >/dev/null; then break; fi
             sleep 1
           done
-          docker logs monitor-container-smoke
-          exit 1
+          curl -fsS http://127.0.0.1:3000/login >/dev/null
+          curl -fsS -D /tmp/monitor-worker-headers -o /tmp/monitor-worker.js \
+            http://127.0.0.1:3000/auto-refresh-worker.js
+          grep -qi 'content-type:.*javascript' /tmp/monitor-worker-headers
+          grep -q 'postMessage' /tmp/monitor-worker.js
       - name: Remove smoke-test container
         if: always()
         run: docker rm -f monitor-container-smoke 2>/dev/null || true

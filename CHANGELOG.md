@@ -7,6 +7,7 @@
 - 侧边栏与登录页的 GitHub 项目链接统一指向 `ITSGJY/CLIProxyAPI-Monitor` Fork，并加入浏览器验收。
 - 首页与调用记录页的刷新结果统一通过自动消失的 Toast 展示数据变化：仅显示新增数量或「暂无新增数据」，不显示负数差值、刷新来源或完成状态前缀；首页 Toast 上移并与 Records 页面统一定位。
 - 修复首页自动刷新：启用时立即执行一次只读数据库刷新，随后由真实 Web Worker 按所选间隔持续轮询；将不含敏感信息的计时器脚本加入静态资源放行，并以真实 Worker 验收首次刷新、周期刷新和关闭后停止。
+- 修复生产 Docker 镜像遗漏 Next.js `public` 目录导致自动刷新 Worker 返回 404；容器发布前 smoke test 增加静态 Worker 的 HTTP 状态、Content-Type 和脚本内容检查。
 
 ## 2026-11-20
 
