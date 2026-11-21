@@ -696,9 +696,7 @@ export default function DashboardPage() {
             ? `当前共 ${formatNumberWithCommas(totalRequests)} 条请求`
             : delta > 0
               ? `新增 ${formatNumberWithCommas(delta)} 条请求`
-              : delta === 0
-                ? "暂无新增数据"
-                : `减少 ${formatNumberWithCommas(Math.abs(delta))} 条请求`;
+              : "暂无新增数据";
           setRefreshStatus(message);
           setRefreshStatusClosing(false);
           if (refreshRequestRef.current?.id === refreshRequest.id) refreshRequestRef.current = null;
@@ -2663,7 +2661,7 @@ export default function DashboardPage() {
           aria-live="polite"
           data-testid="dashboard-refresh-status"
           onClick={() => closeRefreshStatus()}
-          className={`fixed right-6 top-48 z-50 max-w-[320px] cursor-pointer rounded-lg border px-4 py-3 shadow-lg transition-opacity hover:opacity-90 ${
+          className={`fixed right-6 top-26 z-50 max-w-[320px] cursor-pointer rounded-lg border px-4 py-3 shadow-lg transition-opacity hover:opacity-90 ${
             refreshStatusClosing ? "animate-toast-out" : "animate-toast-in"
           } ${
             darkMode

@@ -682,9 +682,7 @@ export default function RecordsPage() {
               ? `当前筛选共 ${formatNumberWithCommas(data.totalCount)} 条记录`
               : delta > 0
                 ? `新增 ${formatNumberWithCommas(delta)} 条记录`
-                : delta === 0
-                  ? "暂无新增数据"
-                  : `减少 ${formatNumberWithCommas(Math.abs(delta))} 条记录`);
+                : "暂无新增数据");
             setRefreshStatusClosing(false);
           }
           totalRecordsRef.current = data.totalCount;

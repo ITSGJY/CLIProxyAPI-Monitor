@@ -123,7 +123,7 @@ test("dashboard manual and automatic refreshes show transient toast counts", asy
   await page.route("**/api/overview?*", (route) => {
     const url = new URL(route.request().url());
     const refreshSource = url.searchParams.get("refreshSource");
-    const totalRequests = refreshSource === "manual" ? (manualRefreshCount++ === 0 ? 103 : 108) : refreshSource === "auto" ? 108 : 100;
+    const totalRequests = refreshSource === "manual" ? (manualRefreshCount++ === 0 ? 103 : 105) : refreshSource === "auto" ? 108 : 100;
     return route.fulfill({
       status: 200,
       json: {
@@ -173,6 +173,7 @@ test("dashboard manual and automatic refreshes show transient toast counts", asy
   await page.getByRole("button", { name: "刷新数据" }).click();
   expect((await manualRefresh).status()).toBe(200);
   await expect(page.getByTestId("dashboard-refresh-status")).toContainText("新增 3 条请求");
+  await expect(page.getByTestId("dashboard-refresh-status")).toHaveClass(/top-26/);
   await expect(page.getByTestId("dashboard-refresh-status")).not.toContainText("刷新完成");
   await expect(page.getByTestId("dashboard-refresh-summary")).toHaveCount(0);
 
@@ -307,10 +308,11 @@ test("records page exposes configurable event columns, request details and filte
 
   const recordListQueries: URL[] = [];
 
+  let recordsRefreshCount = 0;
   await page.route("**/api/records?*", (route) => {
     const query = new URL(route.request().url());
     recordListQueries.push(query);
-    const totalCount = query.searchParams.get("refresh") === "1" ? 13 : 10;
+    const totalCount = query.searchParams.get("refresh") === "1" ? (recordsRefreshCount++ === 0 ? 13 : 10) : 10;
     return route.fulfill({
       status: 200,
       json: {
