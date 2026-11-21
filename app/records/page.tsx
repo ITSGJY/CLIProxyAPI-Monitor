@@ -376,13 +376,9 @@ export default function RecordsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [syncing, setSyncing] = useState(false);
-  const syncingRef = useRef(false);
-  const [syncStatus, setSyncStatus] = useState<string | null>(null);
-  const [syncStatusType, setSyncStatusType] = useState<"success" | "warning" | "error" | null>(null);
-  const syncStatusTimerRef = useRef<number | null>(null);
-  const [syncStatusClosing, setSyncStatusClosing] = useState(false);
-
+  const [refreshStatus, setRefreshStatus] = useState<string | null>(null);
+  const refreshStatusTimerRef = useRef<number | null>(null);
+  const [refreshStatusClosing, setRefreshStatusClosing] = useState(false);
   const [models, setModels] = useState<string[]>([]);
   const [routes, setRoutes] = useState<string[]>([]);
   const [sources, setSources] = useState<string[]>([]);
@@ -648,8 +644,8 @@ export default function RecordsPage() {
   }, [buildParams]);
 
   const fetchRecords = useCallback(
-    async (opts: { cursor?: string | null; append?: boolean; includeFilters?: boolean } = {}) => {
-      if (loadingRef.current) return;
+    async (opts: { cursor?: string | null; append?: boolean; includeFilters?: boolean } = {}): Promise<boolean> => {
+      if (loadingRef.current) return false;
       loadingRef.current = true;
       setLoading(true);
       setError(null);
@@ -663,17 +659,13 @@ export default function RecordsPage() {
         setHasMore(Boolean(data.nextCursor));
         setRecords((prev) => (opts.append ? [...prev, ...data.items] : data.items));
         setHasLoaded(true);
-        if (data.filters?.models?.length) {
-          setModels(data.filters.models);
-        }
-        if (data.filters?.routes?.length) {
-          setRoutes(data.filters.routes);
-        }
-        if (data.filters?.sources?.length) {
-          setSources(data.filters.sources);
-        }
+        if (data.filters?.models?.length) setModels(data.filters.models);
+        if (data.filters?.routes?.length) setRoutes(data.filters.routes);
+        if (data.filters?.sources?.length) setSources(data.filters.sources);
+        return true;
       } catch (err) {
         setError((err as Error).message || "加载失败");
+        return false;
       } finally {
         setLoading(false);
         loadingRef.current = false;
@@ -681,96 +673,30 @@ export default function RecordsPage() {
     },
     [buildParams]
   );
-
-  const closeSyncStatus = useCallback(() => {
-    setSyncStatusClosing(true);
+  const closeRefreshStatus = useCallback(() => {
+    setRefreshStatusClosing(true);
     setTimeout(() => {
-      setSyncStatus(null);
-      setSyncStatusType(null);
-      setSyncStatusClosing(false);
+      setRefreshStatus(null);
+      setRefreshStatusClosing(false);
     }, 400);
   }, []);
 
   useEffect(() => {
-    if (!syncStatus) return;
-    if (syncStatusTimerRef.current !== null) {
-      window.clearTimeout(syncStatusTimerRef.current);
+    if (!refreshStatus) return;
+    if (refreshStatusTimerRef.current !== null) {
+      window.clearTimeout(refreshStatusTimerRef.current);
     }
-    syncStatusTimerRef.current = window.setTimeout(() => {
-      closeSyncStatus();
-      syncStatusTimerRef.current = null;
+    refreshStatusTimerRef.current = window.setTimeout(() => {
+      closeRefreshStatus();
+      refreshStatusTimerRef.current = null;
     }, 10000);
     return () => {
-      if (syncStatusTimerRef.current !== null) {
-        window.clearTimeout(syncStatusTimerRef.current);
-        syncStatusTimerRef.current = null;
+      if (refreshStatusTimerRef.current !== null) {
+        window.clearTimeout(refreshStatusTimerRef.current);
+        refreshStatusTimerRef.current = null;
       }
     };
-  }, [syncStatus, closeSyncStatus]);
-
-  const doSync = useCallback(async (timeout = 60000) => {
-    if (syncingRef.current) return 0;
-    syncingRef.current = true;
-    setSyncing(true);
-    setSyncStatus(null);
-    setSyncStatusType(null);
-    setError(null);
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-      const res = await fetch("/api/sync", {
-        method: "POST",
-        cache: "no-store",
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-
-      const data = await res.json();
-      if (!res.ok) {
-        const msg = `同步失败: ${data.error || res.statusText}`;
-        setSyncStatusType("error");
-        setSyncStatus(msg);
-        setError(msg);
-        return 0;
-      }
-
-      if (data.status === "queued") {
-        const authFilesWarning = typeof data.authFilesWarning === "string" ? data.authFilesWarning : "";
-        setSyncStatusType(authFilesWarning ? "warning" : "success");
-        setSyncStatus(authFilesWarning
-          ? `采集任务已提交，等待 Collector 处理；认证映射同步异常：${authFilesWarning}`
-          : "采集任务已提交，等待 Collector 处理");
-        return 0;
-      }
-
-      const inserted = data.inserted ?? 0;
-      const authFilesWarning = typeof data.authFilesWarning === "string" ? data.authFilesWarning : "";
-
-      if (authFilesWarning) {
-        setSyncStatusType("warning");
-        const fullMessage = inserted > 0
-          ? `同步完成，但认证映射同步异常：${authFilesWarning}（已同步 ${inserted} 条记录）`
-          : `同步完成，但认证映射同步异常：${authFilesWarning}`;
-        setSyncStatus(fullMessage);
-      } else if (inserted > 0) {
-        setSyncStatusType("success");
-        setSyncStatus(`已同步 ${inserted} 条记录`);
-      }
-      return inserted;
-    } catch (err) {
-      const isTimeout = (err as Error).name === "AbortError";
-      const msg = isTimeout ? "同步超时：请稍后重试" : `同步失败: ${(err as Error).message || "请求失败"}`;
-      setSyncStatusType("error");
-      setSyncStatus(msg);
-      setError(msg);
-      return 0;
-    } finally {
-      syncingRef.current = false;
-      setSyncing(false);
-    }
-  }, []);
-
+  }, [refreshStatus, closeRefreshStatus]);
   const resetAndFetch = useCallback(
     (includeFilters?: boolean) => {
       setRecords([]);
@@ -780,6 +706,14 @@ export default function RecordsPage() {
     },
     [fetchRecords]
   );
+
+  const refreshRecords = useCallback(async () => {
+    if (loadingRef.current) return;
+    setRefreshStatus(null);
+    setRefreshStatusClosing(false);
+    const refreshed = await fetchRecords({ cursor: null, append: false });
+    if (refreshed) setRefreshStatus("已从数据库刷新记录");
+  }, [fetchRecords]);
 
   useEffect(() => {
     resetAndFetch(true);
@@ -1161,21 +1095,16 @@ export default function RecordsPage() {
         </div>
         <div className="flex items-center gap-3 text-sm text-slate-300">
           <button
-            onClick={async () => {
-              const inserted = await doSync();
-              if (inserted > 0) {
-                resetAndFetch(false);
-              }
-            }}
-            disabled={syncing}
+            onClick={refreshRecords}
+            disabled={loading}
             className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 font-semibold transition ${
-              syncing
+              loading
                 ? "cursor-not-allowed border-slate-700 bg-slate-800 text-slate-500"
                 : "border-slate-700 bg-slate-800 text-slate-200 hover:border-slate-500"
             }`}
           >
-            <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
-            {syncing ? "同步中..." : "刷新"}
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            {loading ? "刷新中..." : "刷新"}
           </button>
           <button type="button" onClick={() => exportRecords("csv")} className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 font-semibold text-slate-200 hover:border-slate-500">
             <Download className="h-4 w-4" /> CSV
@@ -1591,25 +1520,20 @@ export default function RecordsPage() {
         <div ref={sentinelRef} className="h-6" />
       </section>
 
-      {syncStatus && (
+      {refreshStatus && (
         <div
-          onClick={() => closeSyncStatus()}
-          className={`fixed right-6 top-26 z-50 max-w-[290px] cursor-pointer rounded-lg border px-4 py-3 shadow-lg transition-opacity hover:opacity-90 ${
-            syncStatusClosing ? "animate-toast-out" : "animate-toast-in"
-          } ${
-            syncStatusType === "error"
-              ? "border-rose-500/30 bg-rose-950/60 text-rose-200"
-              : syncStatusType === "warning"
-                ? "border-amber-500/40 bg-amber-950/70 text-amber-200"
-                : "border-green-500/40 bg-green-900/80 text-green-100"
+          onClick={() => closeRefreshStatus()}
+          className={`fixed right-6 top-26 z-50 max-w-[290px] cursor-pointer rounded-lg border border-green-500/40 bg-green-900/80 px-4 py-3 text-green-100 shadow-lg transition-opacity hover:opacity-90 ${
+            refreshStatusClosing ? "animate-toast-out" : "animate-toast-in"
           }`}
         >
           <div className="flex items-center gap-2.5">
-            <span className="text-xl animate-emoji-pop">{syncStatusType === "error" ? "❌" : syncStatusType === "warning" ? "⚠️" : "✅"}</span>
-            <span className="text-sm font-medium">{syncStatus}</span>
+            <span className="text-xl animate-emoji-pop">✅</span>
+            <span className="text-sm font-medium">{refreshStatus}</span>
           </div>
         </div>
       )}
+
       {selectedRecord ? (
         <RecordDetailsDrawer
           eventId={selectedRecord.id}

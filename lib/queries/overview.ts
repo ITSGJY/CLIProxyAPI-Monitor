@@ -13,18 +13,17 @@ function isLocalDayBoundary(value: Date, timezone: string) {
   return values.hour === "00" && values.minute === "00" && values.second === "00" && value.getUTCMilliseconds() === 0;
 }
 
-function normalizeRange(days?: number, start?: string | null, end?: string | null) {
+function normalizeRange(days?: number, start?: string | null, end?: string | null, allTime = false) {
   const endDate = end ? new Date(end) : new Date();
   if (end && /^\d{4}-\d{2}-\d{2}$/.test(end)) endDate.setUTCDate(endDate.getUTCDate() + 1);
-  const startDate = start ? new Date(start) : new Date(endDate.getTime() - Math.min(Math.max(days ?? 14, 1), 366) * 86400000);
+  const startDate = allTime ? new Date(0) : start ? new Date(start) : new Date(endDate.getTime() - Math.min(Math.max(days ?? 14, 1), 366) * 86400000);
   if (!Number.isFinite(startDate.getTime()) || !Number.isFinite(endDate.getTime()) || startDate >= endDate) throw new RangeError("Invalid Overview time range");
   return { start: startDate, end: endDate, days: Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000)) };
 }
-
 export async function getOverview(daysInput?: number, opts?: DashboardFilters & {
-  page?: number | null; pageSize?: number | null; timezone?: string | null;
+  page?: number | null; pageSize?: number | null; timezone?: string | null; allTime?: boolean;
 }): Promise<{ overview: UsageOverview; empty: boolean; days: number; meta: OverviewMeta; filters: { models: string[]; routes: string[]; sources: string[]; names: string[]; providers?: string[]; serviceTiers?: string[] }; timezone: string; lastSyncAt: string | null; costByCurrency: Array<{currency:string; costNanos:number | null}>; pricingCoverage: {priced:number;unpriced:number;partial:number;rate:number} }> {
-  const range = normalizeRange(daysInput, opts?.start, opts?.end);
+  const range = normalizeRange(daysInput, opts?.start, opts?.end, Boolean(opts?.allTime));
   const timezone = opts?.timezone || "Asia/Shanghai";
   try { new Intl.DateTimeFormat("en-US", { timeZone: timezone }); } catch { throw new RangeError("Invalid timezone"); }
   const page = Math.max(1, Math.floor(opts?.page ?? 1));
@@ -34,10 +33,10 @@ export async function getOverview(daysInput?: number, opts?: DashboardFilters & 
   const timezoneLiteral = sql.raw(`'${timezone.replace(/'/g, "''")}'`);
   const dayExpr = sql`date_trunc('day', ${usageEvents.occurredAt} AT TIME ZONE ${timezoneLiteral})`;
   const hourExpr = sql`date_trunc('hour', ${usageEvents.occurredAt} AT TIME ZONE ${timezoneLiteral})`;
-  const dailyCheckpoint = range.days <= 90 && !opts?.name && !opts?.status
+  const dailyCheckpoint = !opts?.allTime && range.days <= 90 && !opts?.name && !opts?.status
     ? await db.select({ state: usageRollupCheckpoints.state, completedAt: usageRollupCheckpoints.completedAt }).from(usageRollupCheckpoints).where(and(eq(usageRollupCheckpoints.rollupName, "usage_daily"), eq(usageRollupCheckpoints.timezone, timezone))).limit(1)
     : [];
-  const useDailyRollup = isLocalDayBoundary(range.start, timezone) && isLocalDayBoundary(range.end, timezone) && !opts?.source && dailyCheckpoint[0]?.state === "completed" && dailyCheckpoint[0]?.completedAt && Date.now() - new Date(dailyCheckpoint[0].completedAt).getTime() < 2 * 60 * 60 * 1000;
+  const useDailyRollup = !opts?.allTime && isLocalDayBoundary(range.start, timezone) && isLocalDayBoundary(range.end, timezone) && !opts?.source && dailyCheckpoint[0]?.state === "completed" && dailyCheckpoint[0]?.completedAt && Date.now() - new Date(dailyCheckpoint[0].completedAt).getTime() < 2 * 60 * 60 * 1000;
   const rollupParts: any[] = [gte(usageRollupsDaily.bucketStart, range.start), lt(usageRollupsDaily.bucketStart, range.end), eq(usageRollupsDaily.timezone, timezone)];
   if (opts?.model) rollupParts.push(eq(usageRollupsDaily.model, opts.model));
   if (opts?.route) rollupParts.push(eq(usageRollupsDaily.apiKeyMask, opts.route));
@@ -45,15 +44,22 @@ export async function getOverview(daysInput?: number, opts?: DashboardFilters & 
   if (opts?.provider) rollupParts.push(eq(usageRollupsDaily.provider, opts.provider));
   if (opts?.serviceTier) rollupParts.push(eq(usageRollupsDaily.serviceTier, opts.serviceTier));
   if (opts?.currency) rollupParts.push(eq(usageRollupsDaily.costCurrency, opts.currency));
-  const dayRowsPromise = useDailyRollup
-    ? db.select({ label: sql<string>`to_char(${usageRollupsDaily.bucketStart} AT TIME ZONE ${timezoneLiteral}, 'YYYY-MM-DD')`, requests: sql<number>`sum(${usageRollupsDaily.requestCount})`, errors: sql<number>`sum(${usageRollupsDaily.errorCount})`, tokens: sql<number>`sum(${usageRollupsDaily.totalTokens})` }).from(usageRollupsDaily).where(and(...rollupParts)).groupBy(usageRollupsDaily.bucketStart).orderBy(usageRollupsDaily.bucketStart).limit(366)
-    : db.select({ label: sql<string>`to_char(${dayExpr}, 'YYYY-MM-DD')`, requests: sql<number>`count(*)`, errors: sql<number>`count(*) FILTER (WHERE ${usageEvents.isError})`, tokens: sql<number>`sum(${usageEvents.totalTokens})` }).from(usageEvents).where(where).groupBy(dayExpr).orderBy(dayExpr).limit(366);
+  const rawDayRowsQuery = db.select({ label: sql<string>`to_char(${dayExpr}, 'YYYY-MM-DD')`, requests: sql<number>`count(*)`, errors: sql<number>`count(*) FILTER (WHERE ${usageEvents.isError})`, tokens: sql<number>`sum(${usageEvents.totalTokens})` }).from(usageEvents).where(where).groupBy(dayExpr).orderBy(dayExpr);
+  const dayRowsPromise = opts?.allTime
+    ? rawDayRowsQuery
+    : useDailyRollup
+      ? db.select({ label: sql<string>`to_char(${usageRollupsDaily.bucketStart} AT TIME ZONE ${timezoneLiteral}, 'YYYY-MM-DD')`, requests: sql<number>`sum(${usageRollupsDaily.requestCount})`, errors: sql<number>`sum(${usageRollupsDaily.errorCount})`, tokens: sql<number>`sum(${usageRollupsDaily.totalTokens})` }).from(usageRollupsDaily).where(and(...rollupParts)).groupBy(usageRollupsDaily.bucketStart).orderBy(usageRollupsDaily.bucketStart).limit(366)
+      : rawDayRowsQuery.limit(366);
+  const hourlyStart = opts?.allTime
+    ? new Date(Math.max(range.start.getTime(), range.end.getTime() - 367 * 24 * 60 * 60 * 1000))
+    : range.start;
+  const hourlyWhere = opts?.allTime ? and(where, gte(usageEvents.occurredAt, hourlyStart)) : where;
   const [totalsRows, currencyRows, modelRows, dayRows, hourRows, modelCountRows, options, lastRows, pricedRows] = await Promise.all([
     db.select({ requests: sql<number>`count(*)`, tokens: sql<number>`coalesce(sum(${usageEvents.totalTokens}),0)`, input: sql<number>`coalesce(sum(${usageEvents.inputTokens}),0)`, output: sql<number>`coalesce(sum(${usageEvents.outputTokens}),0)`, reasoning: sql<number>`coalesce(sum(${usageEvents.reasoningTokens}),0)`, cached: sql<number>`coalesce(sum(${usageEvents.cachedTokens}),0)`, success: sql<number>`count(*) FILTER (WHERE NOT ${usageEvents.isError})`, errors: sql<number>`count(*) FILTER (WHERE ${usageEvents.isError})` }).from(usageEvents).where(where),
     db.select({ currency: usageEvents.costCurrency, costNanos: sql<number>`coalesce(sum(${usageEvents.costNanos}) FILTER (WHERE ${usageEvents.pricingStatus}='priced'),0)`, priced: sql<number>`count(*) FILTER (WHERE ${usageEvents.pricingStatus}='priced')`, unpriced: sql<number>`count(*) FILTER (WHERE ${usageEvents.pricingStatus}='unpriced')`, partial: sql<number>`count(*) FILTER (WHERE ${usageEvents.pricingStatus}='partial')` }).from(usageEvents).where(where).groupBy(usageEvents.costCurrency),
     db.select({ model: usageEvents.model, requests: sql<number>`count(*)`, tokens: sql<number>`sum(${usageEvents.totalTokens})`, input: sql<number>`sum(${usageEvents.inputTokens})`, output: sql<number>`sum(${usageEvents.outputTokens})`, costNanos: sql<number>`sum(${usageEvents.costNanos}) FILTER (WHERE ${usageEvents.costCurrency} = 'USD' AND ${usageEvents.pricingStatus} = 'priced')`, priced: sql<number>`count(*) FILTER (WHERE ${usageEvents.pricingStatus}='priced' AND ${usageEvents.costCurrency}='USD')` }).from(usageEvents).where(where).groupBy(usageEvents.model).orderBy(desc(sql`sum(${usageEvents.totalTokens})`)).limit(pageSize).offset((page-1)*pageSize),
     dayRowsPromise,
-    db.select({ label: sql<string>`to_char(${hourExpr}, 'MM-DD HH24')`, hourStart: sql<Date>`(${hourExpr}) AT TIME ZONE ${timezone}`, requests: sql<number>`count(*)`, tokens: sql<number>`sum(${usageEvents.totalTokens})`, input: sql<number>`sum(${usageEvents.inputTokens})`, output: sql<number>`sum(${usageEvents.outputTokens})`, reasoning: sql<number>`sum(${usageEvents.reasoningTokens})`, cached: sql<number>`sum(${usageEvents.cachedTokens})` }).from(usageEvents).where(where).groupBy(hourExpr).orderBy(hourExpr).limit(24*367),
+    db.select({ label: sql<string>`to_char(${hourExpr}, 'MM-DD HH24')`, hourStart: sql<Date>`(${hourExpr}) AT TIME ZONE ${timezone}`, requests: sql<number>`count(*)`, tokens: sql<number>`sum(${usageEvents.totalTokens})`, input: sql<number>`sum(${usageEvents.inputTokens})`, output: sql<number>`sum(${usageEvents.outputTokens})`, reasoning: sql<number>`sum(${usageEvents.reasoningTokens})`, cached: sql<number>`sum(${usageEvents.cachedTokens})` }).from(usageEvents).where(hourlyWhere).groupBy(hourExpr).orderBy(hourExpr).limit(24*367),
     db.select({ count: sql<number>`count(distinct ${usageEvents.model})` }).from(usageEvents).where(where),
     getDashboardFilterOptions({ start: range.start.toISOString(), end: range.end.toISOString() }),
     db.select({ last: sql<Date | null>`max(${usageEvents.ingestedAt})` }).from(usageEvents),

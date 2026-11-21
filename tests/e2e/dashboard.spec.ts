@@ -14,6 +14,10 @@ test("unauthenticated dashboard redirects to the login page", async ({ page }) =
   await page.goto("/");
   await expect(page).toHaveURL(/\/login\?/);
   await expect(page.getByPlaceholder("输入访问密码")).toBeVisible();
+  await expect(page.getByRole("link", { name: "CLIProxyAPI Monitor" })).toHaveAttribute(
+    "href",
+    "https://github.com/ITSGJY/CLIProxyAPI-Monitor"
+  );
 });
 
 test("login and all dashboard pages render with JSON API responses", async ({ page }) => {
@@ -22,7 +26,16 @@ test("login and all dashboard pages render with JSON API responses", async ({ pa
   const requestFailures: string[] = [];
   const apiFailures: Array<{ url: string; status: number; contentType: string; body: string }> = [];
   const apiTasks: Promise<void>[] = [];
+  const overviewRequests: string[] = [];
+  const recordsRequests: string[] = [];
+  const syncRequests: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(`${page.url()} :: ${error.stack || error.message}`));
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/overview") overviewRequests.push(request.url());
+    if (url.pathname === "/api/records") recordsRequests.push(request.url());
+    if (url.pathname === "/api/sync") syncRequests.push(request.url());
+  });
   page.on("console", (message) => {
     if (message.type() === "error") consoleErrors.push(`${page.url()} :: ${message.text()}`);
   });
@@ -43,21 +56,50 @@ test("login and all dashboard pages render with JSON API responses", async ({ pa
 
   await page.route("**/api/management-url", (route) => route.fulfill({ status: 200, json: { url: "http://127.0.0.1:8317/management.html" } }));
   await page.route("**/api/usage-statistics-enabled", (route) => route.fulfill({ status: 200, json: { "usage-statistics-enabled": false } }));
-  await page.route("**/api/sync", (route) => route.fulfill({ status: 200, json: { authFilesSynced: 0 } }));
 
   await login(page);
   await expect(page.getByRole("heading", { name: "Usage Dashboard" })).toBeVisible();
+  await expect(page.locator('a[href="https://github.com/ITSGJY/CLIProxyAPI-Monitor"]')).toHaveCount(1);
   await expect(page.getByText("价格覆盖率", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Pricing Center · 模型价格体系" })).toHaveCount(0);
+  await expect.poll(() => overviewRequests.length).toBeGreaterThan(0);
+  await expect(page.getByRole("button", { name: "刷新数据" })).toBeEnabled();
+  const manualRefresh = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/overview" && url.searchParams.get("skipCache") === "1";
+  });
+  await page.getByRole("button", { name: "刷新数据" }).click();
+  expect((await manualRefresh).status()).toBe(200);
+
+  const allTimeRefresh = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/overview" && url.searchParams.get("all") === "1";
+  });
+  await page.getByRole("button", { name: "时间范围：全部" }).click();
+  const allTimeResponse = await allTimeRefresh;
+  expect(allTimeResponse.status()).toBe(200);
+  expect(new URL(allTimeResponse.url()).searchParams.has("days")).toBe(false);
 
   await page.goto("/explore");
   await expect(page.getByRole("heading", { name: "数据探索" })).toBeVisible();
 
+  const firstRecordsResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/records" && url.searchParams.get("includeFilters") === "1";
+  });
   await page.goto("/records");
   await expect(page.getByRole("heading", { name: "调用记录" })).toBeVisible();
-  await page.waitForTimeout(500);
+  expect((await firstRecordsResponse).status()).toBe(200);
+  await expect(page.getByRole("button", { name: "刷新", exact: true })).toBeEnabled();
+  const recordsRefresh = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/records" && !url.searchParams.has("includeFilters") && !url.searchParams.has("cursor");
+  });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  expect((await recordsRefresh).status()).toBe(200);
+  expect(recordsRequests.length).toBeGreaterThanOrEqual(2);
+  expect(syncRequests).toEqual([]);
   await Promise.all(apiTasks);
-
   expect({ pageErrors, consoleErrors, requestFailures, apiFailures }).toEqual({
     pageErrors: [], consoleErrors: [], requestFailures: [], apiFailures: []
   });

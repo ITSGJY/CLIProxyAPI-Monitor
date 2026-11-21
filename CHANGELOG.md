@@ -1,4 +1,11 @@
 # CHANGELOG
+
+## 2026-11-21
+
+- 将首页首屏加载、手动刷新和自动刷新统一为只读 PostgreSQL 查询；不再通过 Dashboard 刷新入口提交 `pull_now` 采集命令。`/records` 刷新也直接重新查询数据库中的请求事件。
+- 首页时间范围新增「全部」，统计与按日趋势覆盖全部历史请求；为控制小时级图表数据量，「全部」模式下小时趋势展示最近 367 天。
+- 侧边栏与登录页的 GitHub 项目链接统一指向 `ITSGJY/CLIProxyAPI-Monitor` Fork，并加入浏览器验收。
+
 ## 2026-11-20
 
 - 完成 Phase 5.5 凭据错误事件：对照 CPA v8.0.56 / OMC v0.4.2 固定源码契约，新增独立 `SUBSCRIBE errors` 连接、进程和可选 Compose 服务；保持既有 Usage、Inbox、Pricing、Records 列表及四标签详情结构不变。

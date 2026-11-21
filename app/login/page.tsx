@@ -170,7 +170,7 @@ function LoginPageContent() {
         <p className="text-center text-slate-500 text-sm mt-6">
           © 2026{" "}
           <a
-            href="https://github.com/sxjeru/CLIProxyAPI-Monitor"
+            href="https://github.com/ITSGJY/CLIProxyAPI-Monitor"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-slate-300 transition-colors"

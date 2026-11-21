@@ -42,8 +42,6 @@ const hourFormatter = new Intl.DateTimeFormat("en-CA", {
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-// 可通过 NEXT_PUBLIC_SYNC_TIMEOUT_MS 环境变量调节（毫秒），默认 120 秒
-const SYNC_CLIENT_TIMEOUT_MS = Number(process.env.NEXT_PUBLIC_SYNC_TIMEOUT_MS) || 120_000;
 
 function formatDateInputValue(date: Date) {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -129,7 +127,7 @@ export default function DashboardPage() {
   const defaultStart = new Date(defaultEnd.getTime() - 6 * DAY_MS);
   const fallbackRange = { mode: "preset" as const, days: 14, start: formatDateInputValue(defaultStart), end: formatDateInputValue(defaultEnd) };
 
-  const [rangeMode, setRangeMode] = useState<"preset" | "custom">(fallbackRange.mode);
+  const [rangeMode, setRangeMode] = useState<"all" | "preset" | "custom">(fallbackRange.mode);
   const [rangeDays, setRangeDays] = useState(fallbackRange.days);
   const [customStart, setCustomStart] = useState(fallbackRange.start);
   const [customEnd, setCustomEnd] = useState(fallbackRange.end);
@@ -141,8 +139,8 @@ export default function DashboardPage() {
     const saved = window.localStorage.getItem("rangeSelection");
     if (saved) {
       try {
-        const parsed = JSON.parse(saved) as { mode?: "preset" | "custom"; days?: number; start?: string; end?: string };
-        if (parsed && (parsed.mode === "preset" || parsed.mode === "custom")) {
+        const parsed = JSON.parse(saved) as { mode?: "all" | "preset" | "custom"; days?: number; start?: string; end?: string };
+        if (parsed && (parsed.mode === "all" || parsed.mode === "preset" || parsed.mode === "custom")) {
           setRangeMode(parsed.mode);
           if (Number.isFinite(parsed.days)) {
             setRangeDays(Math.max(1, Number(parsed.days)));
@@ -192,22 +190,8 @@ export default function DashboardPage() {
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const saveStatusTimerRef = useRef<number | null>(null);
   const [saving, setSaving] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<string | null>(null);
-  const syncStatusTimerRef = useRef<number | null>(null);
-  const [syncStatusClosing, setSyncStatusClosing] = useState(false);
   const [saveStatusClosing, setSaveStatusClosing] = useState(false);
-  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(() => {
-    if (typeof window === "undefined") return null;
-    const saved = window.localStorage.getItem("lastSyncTime");
-    return saved ? new Date(saved) : null;
-  });
-  const [lastInsertedDelta, setLastInsertedDelta] = useState(() => {
-    if (typeof window === "undefined") return 0;
-    const saved = window.localStorage.getItem("lastInsertedDelta");
-    const parsed = saved ? Number.parseInt(saved, 10) : 0;
-    return Number.isFinite(parsed) ? parsed : 0;
-  });
+  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [ready, setReady] = useState(false);
   const [pieMode, setPieMode] = useState<"tokens" | "requests">("tokens");
@@ -220,7 +204,6 @@ export default function DashboardPage() {
   const pieChartContainerRef = useRef<HTMLDivElement | null>(null);
   const pieChartFullscreenContainerRef = useRef<HTMLDivElement | null>(null);
   const pieLegendClearTimerRef = useRef<number | null>(null);
-  const syncingRef = useRef(false);
   const skipOverviewCacheRef = useRef(false);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
@@ -414,14 +397,6 @@ export default function DashboardPage() {
     };
   }, [pieTooltipOpen, cancelPieLegendClear]);
 
-  // 关闭syncStatus toast
-  const closeSyncStatus = useCallback(() => {
-    setSyncStatusClosing(true);
-    setTimeout(() => {
-      setSyncStatus(null);
-      setSyncStatusClosing(false);
-    }, 400);
-  }, []);
 
   // 关闭saveStatus toast  
   const closeSaveStatus = useCallback(() => {
@@ -432,26 +407,6 @@ export default function DashboardPage() {
     }, 400);
   }, []);
 
-  // 自动清除 syncStatus toast
-  useEffect(() => {
-    if (!syncStatus) return;
-    
-    if (syncStatusTimerRef.current !== null) {
-      window.clearTimeout(syncStatusTimerRef.current);
-    }
-    
-    syncStatusTimerRef.current = window.setTimeout(() => {
-      closeSyncStatus();
-      syncStatusTimerRef.current = null;
-    }, 10000);
-    
-    return () => {
-      if (syncStatusTimerRef.current !== null) {
-        window.clearTimeout(syncStatusTimerRef.current);
-        syncStatusTimerRef.current = null;
-      }
-    };
-  }, [syncStatus, closeSyncStatus]);
 
   // 自动清除 saveStatus toast
   useEffect(() => {
@@ -507,85 +462,10 @@ export default function DashboardPage() {
     }
   }, []);
 
-  // 执行数据同步
-  const doSync = useCallback(async (showMessage = true, triggerRefresh = true, timeout = SYNC_CLIENT_TIMEOUT_MS) => {
-    if (syncingRef.current) return;
-    syncingRef.current = true;
-    setSyncing(true);
-    setSyncStatus(null);
-    try {
-      // 创建超时控制器（默认 60 秒，首屏加载时为 5 秒）
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
-      
-      const res = await fetch("/api/sync", { 
-        method: "POST", 
-        cache: "no-store",
-        signal: controller.signal 
-      });
-      clearTimeout(timeoutId);
-      
-      const data = await res.json();
-      if (!res.ok) {
-        const errorMsg = `同步失败: ${data.error || res.statusText}`;
-        setSyncStatus(errorMsg);
-        if (typeof window !== "undefined") {
-          window.localStorage.setItem("lastSyncStatus", errorMsg);
-        }
-      } else {
-        const now = new Date();
-        const inserted = data.inserted ?? 0;
-        if (data.status === "queued") {
-          const authFilesWarning = typeof data.authFilesWarning === "string" ? data.authFilesWarning : "";
-          const queuedMessage = authFilesWarning
-            ? `采集任务已提交，等待 Collector 处理；认证映射同步异常：${authFilesWarning}`
-            : "采集任务已提交，等待 Collector 处理";
-          setSyncStatus(queuedMessage);
-          if (typeof window !== "undefined") {
-            window.localStorage.setItem("lastSyncStatus", queuedMessage);
-          }
-          return;
-        }
-        setLastSyncTime(now);
-        if (typeof window !== "undefined") {
-          window.localStorage.setItem("lastSyncTime", now.toISOString());
-        }
-        setLastInsertedDelta((prev) => {
-          const safePrev = Number.isFinite(prev) ? prev : 0;
-          const next = inserted > 0 ? inserted : safePrev;
-          if ((inserted > 0 || !Number.isFinite(prev)) && typeof window !== "undefined") {
-            window.localStorage.setItem("lastInsertedDelta", String(next));
-          }
-          return next;
-        });
-        // 手动同步时总是显示消息，自动同步时仅在有数据时显示
-        const shouldShowMessage = showMessage || inserted > 0;
-        if (shouldShowMessage) {
-          const successMsg = `已同步 ${inserted} 条记录`;
-          setSyncStatus(successMsg);
-          if (typeof window !== "undefined") {
-            window.localStorage.setItem("lastSyncStatus", successMsg);
-          }
-        }
-          if (triggerRefresh && inserted > 0) {
-            skipOverviewCacheRef.current = true;
-            setRefreshTrigger((prev) => prev + 1);
-          }
-      }
-    } catch (err) {
-      // 判断是否为超时错误
-      const isTimeout = (err as Error).name === "AbortError";
-      const errorMsg = isTimeout 
-        ? "同步超时：数据同步可能需要更长时间，建议稍后手动刷新" 
-        : `同步失败: ${(err as Error).message}`;
-      setSyncStatus(errorMsg);
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("lastSyncStatus", errorMsg);
-      }
-    } finally {
-      syncingRef.current = false;
-      setSyncing(false);
-    }
+  // 刷新只重新读取 PostgreSQL；CPA 采集由后台 Collector 独立持续执行
+  const refreshOverview = useCallback(() => {
+    skipOverviewCacheRef.current = true;
+    setRefreshTrigger((prev) => prev + 1);
   }, []);
 
   // 加载价格配置
@@ -612,36 +492,10 @@ export default function DashboardPage() {
   }, [loadPrices]);
 
 
-  // 页面加载时仅在当前会话首次进入时自动同步一次
+  // 首屏直接读取 PostgreSQL 中已持久化的数据，不主动提交采集任务
   useEffect(() => {
-    let active = true;
-    const autoSyncKey = "cli_dashboard_auto_sync_done";
-    const hasSyncedThisSession = typeof window !== "undefined" ? window.sessionStorage.getItem(autoSyncKey) : null;
-
-    if (hasSyncedThisSession) {
-      setReady(true);
-      return () => {
-        active = false;
-      };
-    }
-
-    const run = async () => {
-      try {
-        await doSync(true, true, 5000); // 首屏加载使用 5 秒超时
-        if (typeof window !== "undefined") {
-          window.sessionStorage.setItem(autoSyncKey, "1");
-        }
-      } finally {
-        if (active) setReady(true);
-      }
-    };
-
-    run();
-
-    return () => {
-      active = false;
-    };
-  }, [doSync]);
+    setReady(true);
+  }, []);
 
   useEffect(() => {
     const saved = typeof window !== "undefined" ? window.localStorage.getItem("theme") : null;
@@ -682,7 +536,7 @@ export default function DashboardPage() {
     worker.onmessage = (e: MessageEvent) => {
       if (e.data.type === "tick") {
         tickBaseTimeRef.current = Date.now();
-        doSync(true);
+        refreshOverview();
       }
     };
     return () => {
@@ -690,8 +544,7 @@ export default function DashboardPage() {
       worker.terminate();
       autoRefreshWorkerRef.current = null;
     };
-  }, [doSync]);
-
+  }, [refreshOverview]);
   // 根据 autoRefresh 开关和间隔设置向 Worker 发送 start/stop
   useEffect(() => {
     const worker = autoRefreshWorkerRef.current;
@@ -732,7 +585,9 @@ export default function DashboardPage() {
       setLoadingOverview(true);
       try {
         const params = new URLSearchParams();
-        if (rangeMode === "custom") {
+        if (rangeMode === "all") {
+          params.set("all", "1");
+        } else if (rangeMode === "custom") {
           params.set("start", customStart);
           params.set("end", customEnd);
         } else {
@@ -784,7 +639,7 @@ export default function DashboardPage() {
         if (data.lastSyncAt) {
           const dbTime = new Date(data.lastSyncAt);
           if (Number.isFinite(dbTime.getTime())) {
-            setLastSyncTime((prev) => (!prev || dbTime > prev ? dbTime : prev));
+            setLastSyncTime(dbTime);
           }
         }
       } catch (err) {
@@ -836,7 +691,7 @@ export default function DashboardPage() {
   }, [fullscreenChart]);
 
   const hourRangeOptions: { key: "all" | "24h" | "72h"; label: string }[] = [
-    { key: "all", label: "全部" },
+    { key: "all", label: rangeMode === "all" ? "最近 367 天" : "全部" },
     { key: "24h", label: "最近 24 小时" },
     { key: "72h", label: "最近 72 小时" }
   ];
@@ -891,6 +746,14 @@ export default function DashboardPage() {
 
   // 计算实际数据时长（从最早记录到现在）
   const actualTimeSpan = useMemo(() => {
+    if (rangeMode === "all" && overviewData?.byDay?.length) {
+      const earliestDay = new Date(overviewData.byDay[0].label + "T00:00:00Z");
+      if (Number.isFinite(earliestDay.getTime())) {
+        const diffMinutes = Math.max(1, Math.floor((Date.now() - earliestDay.getTime()) / (1000 * 60)));
+        return { days: Math.max(1, diffMinutes / (24 * 60)), minutes: diffMinutes };
+      }
+    }
+
     if (!overviewData?.byHour || overviewData.byHour.length === 0) {
       return { days: appliedDays, minutes: appliedDays * 24 * 60 };
     }
@@ -919,15 +782,14 @@ export default function DashboardPage() {
     const diffDays = Math.max(1, diffMinutes / (24 * 60));
     
     return { days: diffDays, minutes: diffMinutes };
-  }, [overviewData?.byHour, appliedDays]);
-
+  }, [rangeMode, overviewData?.byDay, overviewData?.byHour, appliedDays]);
   const rangeSubtitle = useMemo(() => {
+    if (rangeMode === "all") return "全部历史记录";
     if (rangeMode === "custom" && customStart && customEnd) {
-      return `${customStart} ~ ${customEnd}（共 ${appliedDays} 天）`;
+      return customStart + " ~ " + customEnd + "（共 " + appliedDays + " 天）";
     }
-    return `最近 ${appliedDays} 天`;
+    return "最近 " + appliedDays + " 天";
   }, [rangeMode, customStart, customEnd, appliedDays]);
-
 
   const applyFilters = () => {
     setPage(1);
@@ -1256,18 +1118,18 @@ export default function DashboardPage() {
           </div>
           </div>
           <button
-            onClick={() => doSync(true)}
-            disabled={syncing}
+            onClick={refreshOverview}
+            disabled={loadingOverview}
             className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition ${
-              syncing
+              loadingOverview
                 ? darkMode
                   ? "cursor-not-allowed border-slate-700 bg-slate-800 text-slate-500"
                   : "cursor-not-allowed border-slate-300 bg-slate-200 text-slate-500"
                 : "border-indigo-500/50 bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30"
             }`}
           >
-            <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
-            {syncing ? "同步中..." : "刷新数据"}
+            <RefreshCw className={`h-4 w-4 ${loadingOverview ? "animate-spin" : ""}`} />
+            {loadingOverview ? "刷新中..." : "刷新数据"}
           </button>
           <div className="flex flex-col items-end gap-0.5">
             <div className={`flex items-center gap-2 text-sm ${darkMode ? "text-slate-400" : "text-slate-600"}`}>
@@ -1276,7 +1138,7 @@ export default function DashboardPage() {
             </div>
             {mounted && lastSyncTime && (
               <span className={`text-xs ${darkMode ? "text-slate-500" : "text-slate-500"}`}>
-                上次同步: {lastSyncTime.toLocaleTimeString()}
+                最近入库: {lastSyncTime.toLocaleTimeString()}
               </span>
             )}
           </div>
@@ -1285,6 +1147,22 @@ export default function DashboardPage() {
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <span className="text-sm uppercase tracking-wide text-slate-500">时间范围</span>
+        <button
+          type="button"
+          aria-label="时间范围：全部"
+          onClick={() => {
+            setRangeMode("all");
+            setPage(1);
+            setCustomPickerOpen(false);
+          }}
+          className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition ${
+            rangeMode === "all"
+              ? "border-indigo-500 bg-indigo-600 text-white"
+              : darkMode ? "border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-500" : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
+          }`}
+        >
+          全部
+        </button>
         {[7, 14, 30].map((days) => (
           <button
             key={days}
@@ -1508,11 +1386,6 @@ export default function DashboardPage() {
               <div className={`text-sm uppercase tracking-wide ${darkMode ? "text-slate-400" : "text-slate-500"}`}>请求数</div>
               <div className={`mt-3 text-2xl font-semibold ${darkMode ? "text-white" : "text-slate-900"}`}>
                 {formatNumberWithCommas(overviewData.totalRequests)}
-                {lastInsertedDelta > 0 ? (
-                  <span className={`ml-2 text-sm font-normal ${darkMode ? "text-slate-400" : "text-slate-500"}`}>
-                    (+{formatCompactNumber(lastInsertedDelta)})
-                  </span>
-                ) : null}
               </div>
               <p className="mt-2 text-sm">
                 <span
@@ -1644,7 +1517,7 @@ export default function DashboardPage() {
               {showEmpty ? (
                 <div className="flex h-full flex-col items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-800/30 text-center">
                   <p className="text-base text-slate-400">暂无图表数据</p>
-                  <p className="mt-1 text-sm text-slate-500">请先触发 /api/sync 同步数据</p>
+                  <p className="mt-1 text-sm text-slate-500">暂无已入库记录；收到 CPA 请求并由 Collector 写入后会自动显示</p>
                 </div>
               ) : (
               <ResponsiveContainer width="100%" height="100%">
@@ -1964,7 +1837,7 @@ export default function DashboardPage() {
               {showEmpty ? (
                 <div className="flex h-full flex-col items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-800/30 text-center">
                   <p className="text-base text-slate-400">暂无小时数据</p>
-                  <p className="mt-1 text-sm text-slate-500">请先触发 /api/sync 同步数据</p>
+                  <p className="mt-1 text-sm text-slate-500">暂无小时数据；收到 CPA 请求并由 Collector 写入后会自动显示</p>
                 </div>
               ) : (
               <ResponsiveContainer width="100%" height="100%">
@@ -2686,30 +2559,6 @@ export default function DashboardPage() {
         </div>
       </Modal>
 
-      {/* Toast 通知 - 右上角显示 */}
-      {syncStatus && (
-        <div
-          onClick={() => closeSyncStatus()}
-          className={`fixed right-6 top-24 z-50 max-w-[290px] cursor-pointer rounded-lg border px-4 py-3 shadow-lg transition-opacity hover:opacity-90 ${
-            syncStatusClosing ? "animate-toast-out" : "animate-toast-in"
-          } ${
-            syncStatus.includes("失败") || syncStatus.includes("超时")
-              ? darkMode
-                ? "border-rose-500/30 bg-rose-950/60 text-rose-200"
-                : "border-rose-300 bg-rose-50 text-rose-800"
-              : darkMode
-              ? "border-green-500/40 bg-green-900/80 text-green-100"
-              : "border-green-400 bg-green-50 text-green-900"
-          }`}
-        >
-          <div className="flex items-center gap-2.5">
-            <span className="text-xl animate-emoji-pop">
-              {syncStatus.includes("失败") || syncStatus.includes("超时") ? "❌" : "✅"}
-            </span>
-            <span className="text-sm font-medium">{syncStatus}</span>
-          </div>
-        </div>
-      )}
 
       {saveStatus && (
         <div
