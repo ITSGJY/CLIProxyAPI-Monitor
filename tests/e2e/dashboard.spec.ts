@@ -85,24 +85,96 @@ test("login and all dashboard pages render with JSON API responses", async ({ pa
 
   const firstRecordsResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
-    return url.pathname === "/api/records" && url.searchParams.get("includeFilters") === "1";
+    return url.pathname === "/api/records" && url.searchParams.get("includeFilters") === "1" && url.searchParams.get("includeTotal") === "1";
   });
   await page.goto("/records");
   await expect(page.getByRole("heading", { name: "调用记录" })).toBeVisible();
-  expect((await firstRecordsResponse).status()).toBe(200);
+  const initialRecordsResponse = await firstRecordsResponse;
+  expect(initialRecordsResponse.status()).toBe(200);
+  expect(typeof (await initialRecordsResponse.json()).totalCount).toBe("number");
+
   await expect(page.getByRole("button", { name: "刷新", exact: true })).toBeEnabled();
   const recordsRefresh = page.waitForResponse((response) => {
     const url = new URL(response.url());
-    return url.pathname === "/api/records" && !url.searchParams.has("includeFilters") && !url.searchParams.has("cursor");
+    return url.pathname === "/api/records" && url.searchParams.get("includeTotal") === "1" && url.searchParams.get("refresh") === "1" && !url.searchParams.has("includeFilters") && !url.searchParams.has("cursor");
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  expect((await recordsRefresh).status()).toBe(200);
+  const refreshedRecordsResponse = await recordsRefresh;
+  expect(refreshedRecordsResponse.status()).toBe(200);
+  expect(typeof (await refreshedRecordsResponse.json()).totalCount).toBe("number");
+  await expect(page.getByTestId("records-refresh-status")).toContainText("记录数变化");
   expect(recordsRequests.length).toBeGreaterThanOrEqual(2);
   expect(syncRequests).toEqual([]);
   await Promise.all(apiTasks);
   expect({ pageErrors, consoleErrors, requestFailures, apiFailures }).toEqual({
     pageErrors: [], consoleErrors: [], requestFailures: [], apiFailures: []
   });
+});
+
+test("dashboard refresh summary reports manual and automatic request-count changes", async ({ page }) => {
+  let refreshCount = 0;
+  await page.route("**/auto-refresh-worker.js", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/javascript",
+    body: 'let timer; self.onmessage = (event) => { if (event.data?.type === "start") { clearTimeout(timer); timer = setTimeout(() => self.postMessage({ type: "tick" }), 25); } else if (event.data?.type === "stop") { clearTimeout(timer); } };'
+  }));
+  await page.route("**/api/overview", (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("skipCache") === "1") refreshCount += 1;
+    const totalRequests = refreshCount === 0 ? 100 : refreshCount === 1 ? 103 : 108;
+    return route.fulfill({
+      status: 200,
+      json: {
+        overview: {
+          totalRequests,
+          totalTokens: totalRequests * 10,
+          totalInputTokens: totalRequests * 6,
+          totalOutputTokens: totalRequests * 4,
+          totalReasoningTokens: 0,
+          totalCachedTokens: 0,
+          successCount: totalRequests,
+          failureCount: 0,
+          successRate: 1,
+          totalCost: null,
+          models: [],
+          byDay: [],
+          byHour: []
+        },
+        empty: false,
+        days: 14,
+        timezone: "Asia/Shanghai",
+        lastSyncAt: null,
+        meta: { page: 1, pageSize: 500, totalModels: 0, totalPages: 1 },
+        filters: { models: [], routes: [], names: [], providers: [], serviceTiers: [] },
+        costByCurrency: [],
+        pricingCoverage: { priced: 0, unpriced: 0, partial: 0, rate: 1 }
+      }
+    });
+  });
+  await page.route("**/api/prices", (route) => route.fulfill({ status: 200, json: [] }));
+  await page.route("**/api/management-url", (route) => route.fulfill({ status: 200, json: { url: "http://127.0.0.1:8317/management.html" } }));
+  await page.route("**/api/usage-statistics-enabled", (route) => route.fulfill({ status: 200, json: { "usage-statistics-enabled": false } }));
+
+  await login(page);
+  await expect(page.getByRole("heading", { name: "Usage Dashboard" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "刷新数据" })).toBeEnabled();
+
+  const manualRefresh = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/overview" && url.searchParams.get("skipCache") === "1";
+  });
+  await page.getByRole("button", { name: "刷新数据" }).click();
+  expect((await manualRefresh).status()).toBe(200);
+  await expect(page.getByTestId("dashboard-refresh-summary")).toHaveText("手动刷新 · 请求数变化 +3 条");
+
+  const automaticRefresh = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/overview" && url.searchParams.get("skipCache") === "1";
+  });
+  await page.getByRole("button", { name: "自动刷新", exact: true }).click();
+  expect((await automaticRefresh).status()).toBe(200);
+  await expect(page.getByTestId("dashboard-refresh-summary")).toHaveText("自动刷新 · 请求数变化 +5 条");
+  await page.getByRole("button", { name: "自动刷新", exact: true }).click();
 });
 
 test("records page exposes configurable event columns, request details and filtered exports", async ({ page }) => {
@@ -217,12 +289,15 @@ test("records page exposes configurable event columns, request details and filte
   const recordListQueries: URL[] = [];
 
   await page.route("**/api/records?*", (route) => {
-    recordListQueries.push(new URL(route.request().url()));
+    const query = new URL(route.request().url());
+    recordListQueries.push(query);
+    const totalCount = query.searchParams.get("refresh") === "1" ? 13 : 10;
     return route.fulfill({
       status: 200,
       json: {
         items: [summary],
         nextCursor: null,
+        totalCount,
         filters: { models: ["gpt-6"], routes: ["****1234"], sources: ["primary-account"], providers: ["OpenAI"], serviceTiers: ["priority"] }
       }
     });
@@ -249,6 +324,16 @@ test("records page exposes configurable event columns, request details and filte
   await page.goto("/records");
 
   await expect(page.getByRole("columnheader", { name: /Request ID/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "刷新", exact: true })).toBeEnabled();
+
+  const refreshResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/records" && url.searchParams.get("includeTotal") === "1" && url.searchParams.get("refresh") === "1";
+  });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  expect((await refreshResponse).status()).toBe(200);
+  await expect(page.getByTestId("records-refresh-status")).toHaveText("刷新完成，记录数变化 +3 条");
+
   await expect(page.getByRole("columnheader", { name: /Cache Read/ })).toBeVisible();
   await expect(page.getByRole("columnheader", { name: /Cache Write/ })).toBeVisible();
   await page.getByRole("button", { name: "列选择" }).click();

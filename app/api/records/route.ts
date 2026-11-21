@@ -51,7 +51,8 @@ export async function GET(request: Request) {
       sortField,
       sortOrder,
       cursor: searchParams.get("cursor"),
-      includeFilters: searchParams.get("includeFilters") === "1"
+      includeFilters: searchParams.get("includeFilters") === "1",
+      includeTotal: searchParams.get("includeTotal") === "1"
     });
     return NextResponse.json(payload, { status: 200, headers: { "Cache-Control": "no-store" } });
   } catch (error) {

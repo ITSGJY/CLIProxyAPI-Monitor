@@ -145,7 +145,7 @@ const listSelection = {
 
 export async function getUsageRecords(input: DashboardFilters & {
   limit?: number; sortKeys?: SortKey[]; sortField?: SortField; sortOrder?: SortOrder;
-  cursor?: string | null; includeFilters?: boolean;
+  cursor?: string | null; includeFilters?: boolean; includeTotal?: boolean;
 }) {
   const limit = Math.min(Math.max(Math.floor(input.limit ?? 50), 1), 200);
   const rawSortKeys = (input.sortKeys?.length ? input.sortKeys : [{ field: input.sortField ?? "occurredAt", order: input.sortOrder ?? "desc" }]) as SortKey[];
@@ -193,10 +193,14 @@ export async function getUsageRecords(input: DashboardFilters & {
     const last = items[items.length - 1];
     nextCursor = encodeCursor({ v: 1, sort: sortKeys, values: sortKeys.map((key) => cursorValueFor(key, last)), eventId: last.id });
   }
+  const totalCountRows = input.includeTotal
+    ? await db.select({ count: sql<string>`count(*)::text` }).from(usageEvents).where(dashboardWhere(input))
+    : null;
   const filters = input.includeFilters ? await getDashboardFilterOptions(input) : undefined;
   return {
     items,
     nextCursor,
+    totalCount: totalCountRows ? Number(totalCountRows[0]?.count ?? 0) : undefined,
     filters: filters ? { models: filters.models, routes: filters.routes, sources: filters.names, providers: filters.providers, serviceTiers: filters.serviceTiers } : undefined
   };
 }

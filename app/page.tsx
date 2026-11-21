@@ -26,6 +26,12 @@ type OverviewAPIResponse = {
   costByCurrency?: Array<{currency:string;costNanos:number | null}>;
 };
 
+type DashboardRefreshSummary = {
+  source: "manual" | "auto";
+  totalRequests: number;
+  delta: number | null;
+};
+
 type PriceForm = {
   model: string;
   inputPricePer1M: string;
@@ -193,6 +199,10 @@ export default function DashboardPage() {
   const [saveStatusClosing, setSaveStatusClosing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [refreshSummary, setRefreshSummary] = useState<DashboardRefreshSummary | null>(null);
+  const refreshRequestSequenceRef = useRef(0);
+  const refreshRequestRef = useRef<{ source: "manual" | "auto"; id: number } | null>(null);
+  const lastOverviewCountRef = useRef<{ filterKey: string; totalRequests: number } | null>(null);
   const [ready, setReady] = useState(false);
   const [pieMode, setPieMode] = useState<"tokens" | "requests">("tokens");
   const [darkMode, setDarkMode] = useState(true);
@@ -463,7 +473,9 @@ export default function DashboardPage() {
   }, []);
 
   // 刷新只重新读取 PostgreSQL；CPA 采集由后台 Collector 独立持续执行
-  const refreshOverview = useCallback(() => {
+  const refreshOverview = useCallback((source: "manual" | "auto" = "manual") => {
+    refreshRequestRef.current = { source, id: ++refreshRequestSequenceRef.current };
+    setRefreshSummary(null);
     skipOverviewCacheRef.current = true;
     setRefreshTrigger((prev) => prev + 1);
   }, []);
@@ -536,7 +548,7 @@ export default function DashboardPage() {
     worker.onmessage = (e: MessageEvent) => {
       if (e.data.type === "tick") {
         tickBaseTimeRef.current = Date.now();
-        refreshOverview();
+        refreshOverview("auto");
       }
     };
     return () => {
@@ -578,6 +590,8 @@ export default function DashboardPage() {
     if (!ready) return;
     if (rangeMode === "custom" && (!customStart || !customEnd)) return;
 
+    const refreshRequest = refreshRequestRef.current;
+
     const controller = new AbortController();
     let active = true;
 
@@ -608,6 +622,12 @@ export default function DashboardPage() {
           skipOverviewCacheRef.current = false;
         }
 
+        const filterParams = new URLSearchParams(params);
+        filterParams.delete("page");
+        filterParams.delete("pageSize");
+        filterParams.delete("skipCache");
+        const filterKey = filterParams.toString();
+        if (!refreshRequest && lastOverviewCountRef.current?.filterKey !== filterKey) setRefreshSummary(null);
         const res = await fetch(`/api/overview?${params.toString()}`, { cache: "no-store", signal: controller.signal });
 
         if (!res.ok) {
@@ -621,11 +641,23 @@ export default function DashboardPage() {
             }
             setOverviewError("无法加载实时用量：" + errMsg);
             setOverview(null);
+            if (refreshRequest && refreshRequestRef.current?.id === refreshRequest.id) refreshRequestRef.current = null;
           }
           return;
         }
         const data: OverviewAPIResponse = await res.json();
         if (!active) return;
+        const totalRequests = Number(data.overview?.totalRequests ?? 0);
+        const previousSnapshot = lastOverviewCountRef.current;
+        if (refreshRequest) {
+          setRefreshSummary({
+            source: refreshRequest.source,
+            totalRequests,
+            delta: previousSnapshot?.filterKey === filterKey ? totalRequests - previousSnapshot.totalRequests : null
+          });
+          if (refreshRequestRef.current?.id === refreshRequest.id) refreshRequestRef.current = null;
+        }
+        lastOverviewCountRef.current = { filterKey, totalRequests };
         setOverview(data.overview ?? null);
         setCostByCurrency(data.costByCurrency ?? []);
         setBucketTimezone(data.timezone);
@@ -648,6 +680,7 @@ export default function DashboardPage() {
         if ((error as any)?.name === "AbortError") return;
         setOverviewError("无法加载实时用量：" + (error.message || "未知错误"));
         setOverview(null);
+        if (refreshRequest && refreshRequestRef.current?.id === refreshRequest.id) refreshRequestRef.current = null;
       } finally {
         if (active) setLoadingOverview(false);
       }
@@ -658,7 +691,6 @@ export default function DashboardPage() {
       controller.abort();
     };
   }, [rangeMode, customStart, customEnd, rangeDays, filterModel, filterRoute, filterName, providerFilter, serviceTierFilter, statusFilter, currencyFilter, page, refreshTrigger, ready]);
-
   const overviewData = overview;
   const showEmpty = overviewEmpty || !overview;
   
@@ -1118,7 +1150,7 @@ export default function DashboardPage() {
           </div>
           </div>
           <button
-            onClick={refreshOverview}
+            onClick={() => refreshOverview("manual")}
             disabled={loadingOverview}
             className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition ${
               loadingOverview
@@ -1139,6 +1171,18 @@ export default function DashboardPage() {
             {mounted && lastSyncTime && (
               <span className={`text-xs ${darkMode ? "text-slate-500" : "text-slate-500"}`}>
                 最近入库: {lastSyncTime.toLocaleTimeString()}
+              </span>
+            )}
+            {refreshSummary && (
+              <span
+                role="status"
+                aria-live="polite"
+                data-testid="dashboard-refresh-summary"
+                className={`text-xs ${darkMode ? "text-emerald-300" : "text-emerald-700"}`}
+              >
+                {refreshSummary.source === "auto" ? "自动刷新" : "手动刷新"} · {refreshSummary.delta === null
+                  ? `当前筛选共 ${formatNumberWithCommas(refreshSummary.totalRequests)} 条请求`
+                  : `请求数变化 ${refreshSummary.delta > 0 ? "+" : ""}${formatNumberWithCommas(refreshSummary.delta)} 条`}
               </span>
             )}
           </div>

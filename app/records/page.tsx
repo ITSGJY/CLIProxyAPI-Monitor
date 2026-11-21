@@ -67,6 +67,7 @@ type UsageRecord = {
 type RecordsResponse = {
   items: UsageRecord[];
   nextCursor: string | null;
+  totalCount?: number;
   filters?: { models: string[]; routes: string[]; sources: string[]; providers?: string[]; serviceTiers?: string[] };
 };
 
@@ -77,6 +78,12 @@ type SortField =
   | "sessionId" | "parentSessionId" | "executionId" | "traceId" | "nodeKind" | "isFork" | "isCompaction";
 type SortOrder = "asc" | "desc";
 type SortKey = { field: SortField; order: SortOrder };
+
+function recordsFilterKey(params: URLSearchParams) {
+  const filters = new URLSearchParams(params);
+  for (const key of ["limit", "sort", "cursor", "includeFilters", "includeTotal", "refresh"]) filters.delete(key);
+  return filters.toString();
+}
 
 type ColumnKey =
   | "occurredAt" | "isError" | "provider" | "model" | "modelAlias" | "responseModel"
@@ -432,6 +439,8 @@ export default function RecordsPage() {
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const loadingRef = useRef(false);
+  const totalRecordsRef = useRef<number | null>(null);
+  const totalRecordsFilterKeyRef = useRef<string | null>(null);
   const columnSettingMap = useMemo(
     () => new Map<ColumnKey, ColumnSetting>(columnSettings.map((item) => [item.key, item])),
     [columnSettings]
@@ -610,7 +619,7 @@ export default function RecordsPage() {
   const loadingEmpty = loading && records.length === 0;
 
   const buildParams = useCallback(
-    (cursorValue?: string | null, includeFilters?: boolean) => {
+    (cursorValue?: string | null, includeFilters?: boolean, includeTotal?: boolean, trackRefresh?: boolean) => {
       const params = new URLSearchParams();
       params.set("limit", String(PAGE_SIZE));
       params.set("sort", sortKeys.map(k => `${k.field}:${k.order}`).join(","));
@@ -629,6 +638,8 @@ export default function RecordsPage() {
       if (appliedStart) params.set("start", new Date(appliedStart).toISOString());
       if (appliedEnd) params.set("end", new Date(appliedEnd).toISOString());
       if (includeFilters) params.set("includeFilters", "1");
+      if (includeTotal) params.set("includeTotal", "1");
+      if (trackRefresh) params.set("refresh", "1");
       return params;
     },
     [sortKeys, appliedModel, appliedRoute, appliedSource, appliedProvider, appliedServiceTier, appliedStatus, appliedCurrency, appliedAdvancedFilters, appliedStart, appliedEnd]
@@ -644,13 +655,14 @@ export default function RecordsPage() {
   }, [buildParams]);
 
   const fetchRecords = useCallback(
-    async (opts: { cursor?: string | null; append?: boolean; includeFilters?: boolean } = {}): Promise<boolean> => {
+    async (opts: { cursor?: string | null; append?: boolean; includeFilters?: boolean; includeTotal?: boolean; trackRefresh?: boolean } = {}): Promise<boolean> => {
       if (loadingRef.current) return false;
       loadingRef.current = true;
       setLoading(true);
       setError(null);
       try {
-        const params = buildParams(opts.cursor, opts.includeFilters);
+        const params = buildParams(opts.cursor, opts.includeFilters, opts.includeTotal, opts.trackRefresh);
+        const filterKey = recordsFilterKey(params);
         const res = await fetch(`/api/records?${params.toString()}`, { cache: "no-store" });
         const data: RecordsResponse & { error?: string } = await res.json();
         if (!res.ok) throw new Error(data.error || res.statusText);
@@ -662,6 +674,17 @@ export default function RecordsPage() {
         if (data.filters?.models?.length) setModels(data.filters.models);
         if (data.filters?.routes?.length) setRoutes(data.filters.routes);
         if (data.filters?.sources?.length) setSources(data.filters.sources);
+        if (typeof data.totalCount === "number" && Number.isFinite(data.totalCount)) {
+          const previousTotal = totalRecordsRef.current;
+          if (opts.trackRefresh) {
+            const delta = previousTotal === null || totalRecordsFilterKeyRef.current !== filterKey ? null : data.totalCount - previousTotal;
+            setRefreshStatus(delta === null
+              ? `刷新完成，当前筛选共 ${formatNumberWithCommas(data.totalCount)} 条记录`
+              : `刷新完成，记录数变化 ${delta > 0 ? "+" : ""}${formatNumberWithCommas(delta)} 条`);
+          }
+          totalRecordsRef.current = data.totalCount;
+          totalRecordsFilterKeyRef.current = filterKey;
+        }
         return true;
       } catch (err) {
         setError((err as Error).message || "加载失败");
@@ -702,17 +725,18 @@ export default function RecordsPage() {
       setRecords([]);
       setCursor(null);
       setHasMore(true);
-      fetchRecords({ cursor: null, append: false, includeFilters });
+      const filterKey = recordsFilterKey(buildParams(null, false));
+      const includeTotal = totalRecordsRef.current === null || totalRecordsFilterKeyRef.current !== filterKey;
+      fetchRecords({ cursor: null, append: false, includeFilters, includeTotal });
     },
-    [fetchRecords]
+    [buildParams, fetchRecords]
   );
 
   const refreshRecords = useCallback(async () => {
     if (loadingRef.current) return;
     setRefreshStatus(null);
     setRefreshStatusClosing(false);
-    const refreshed = await fetchRecords({ cursor: null, append: false });
-    if (refreshed) setRefreshStatus("已从数据库刷新记录");
+    await fetchRecords({ cursor: null, append: false, includeTotal: true, trackRefresh: true });
   }, [fetchRecords]);
 
   useEffect(() => {
@@ -1522,6 +1546,9 @@ export default function RecordsPage() {
 
       {refreshStatus && (
         <div
+          role="status"
+          aria-live="polite"
+          data-testid="records-refresh-status"
           onClick={() => closeRefreshStatus()}
           className={`fixed right-6 top-26 z-50 max-w-[290px] cursor-pointer rounded-lg border border-green-500/40 bg-green-900/80 px-4 py-3 text-green-100 shadow-lg transition-opacity hover:opacity-90 ${
             refreshStatusClosing ? "animate-toast-out" : "animate-toast-in"
