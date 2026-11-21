@@ -488,7 +488,18 @@ test("records page exposes configurable event columns, request details and filte
   await login(page);
   await page.goto("/records");
 
-  await expect(page.getByRole("columnheader", { name: /Request ID/ })).toBeVisible();
+  await expect(page.getByTestId("records-events-table")).toBeVisible();
+  await expect(page.getByTestId("records-events-table").locator("thead th")).toHaveCount(10);
+  await expect(page.getByRole("columnheader", { name: "模式" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "缓存" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: /Request ID/ })).toHaveCount(0);
+  await expect(page.getByRole("columnheader", { name: /Cache Read/ })).toHaveCount(0);
+  await expect(page.getByRole("columnheader", { name: /Cache Write/ })).toHaveCount(0);
+  const recordRow = page.getByRole("row", { name: "查看请求详情：req-e2e-001" });
+  await expect(recordRow).toContainText("1.5K");
+  await expect(recordRow).toContainText("TTFT 500 ms");
+  await expect(recordRow).toContainText("primary-account");
+  await expect(recordRow).toContainText("high");
   await expect(page.getByRole("button", { name: "刷新", exact: true })).toBeEnabled();
 
   const refreshResponse = page.waitForResponse((response) => {
@@ -509,34 +520,31 @@ test("records page exposes configurable event columns, request details and filte
   expect((await noNewRecordsRefresh).status()).toBe(200);
   await expect(page.getByTestId("records-refresh-status")).toContainText("暂无新增数据");
 
-  await expect(page.getByRole("columnheader", { name: /Cache Read/ })).toBeVisible();
-  await expect(page.getByRole("columnheader", { name: /Cache Write/ })).toBeVisible();
   await page.getByRole("button", { name: "列选择" }).click();
   for (const label of ["Session ID", "Parent Session ID", "Execution ID", "Trace ID", "Node Kind", "Fork", "Compaction"]) {
     await expect(page.locator("label").filter({ hasText: label }).first()).toBeVisible();
   }
-  await page.getByRole("button", { name: "列选择" }).click();
-
-  await page.getByRole("button", { name: "列选择" }).click();
   const cacheReadToggle = page.locator("label").filter({ hasText: "Cache Read" }).first().locator("input");
-  await expect(cacheReadToggle).toBeChecked();
-  await cacheReadToggle.uncheck();
+  await expect(cacheReadToggle).not.toBeChecked();
+  await cacheReadToggle.check();
   await expect.poll(() => page.evaluate(() => {
-    const raw = localStorage.getItem("records-column-settings-v3");
+    const raw = localStorage.getItem("records-column-settings-v4");
     return raw ? JSON.parse(raw).find((column: { key: string }) => column.key === "cacheReadTokens")?.visible : null;
-  })).toBe(false);
-  await expect(page.getByRole("columnheader", { name: /Cache Read/ })).toHaveCount(0);
+  })).toBe(true);
+  await expect(page.getByRole("columnheader", { name: /Cache Read/ })).toBeVisible();
 
   await page.reload();
-  await expect(page.getByRole("columnheader", { name: /Cache Read/ })).toHaveCount(0);
+  await expect(page.getByRole("columnheader", { name: /Cache Read/ })).toBeVisible();
   await page.getByRole("button", { name: "列选择" }).click();
-  await page.locator("label").filter({ hasText: "Cache Read" }).first().locator("input").check();
+  await page.locator("label").filter({ hasText: "Cache Read" }).first().locator("input").uncheck();
+  await expect(page.getByRole("columnheader", { name: /Cache Read/ })).toHaveCount(0);
+
   const sessionIdToggle = page.locator("label").filter({ hasText: "Session ID" }).first().locator("input");
   await expect(sessionIdToggle).not.toBeChecked();
   await sessionIdToggle.check();
   await expect(page.getByRole("columnheader", { name: /Session ID/ })).toBeVisible();
   await expect.poll(() => page.evaluate(() => {
-    const raw = localStorage.getItem("records-column-settings-v3");
+    const raw = localStorage.getItem("records-column-settings-v4");
     return raw ? JSON.parse(raw).find((column: { key: string }) => column.key === "sessionId")?.visible : null;
   })).toBe(true);
   await page.reload();
@@ -549,11 +557,11 @@ test("records page exposes configurable event columns, request details and filte
   await searchInput.press("Enter");
   await expect.poll(() => recordListQueries.some((query) => query.searchParams.get("q") === "session-e2e-001")).toBe(true);
   await expect.poll(() => page.evaluate(() => {
-    const raw = localStorage.getItem("records-column-settings-v3");
+    const raw = localStorage.getItem("records-column-settings-v4");
     return raw ? JSON.parse(raw).find((column: { key: string }) => column.key === "cacheReadTokens")?.visible : null;
-  })).toBe(true);
+  })).toBe(false);
 
-  await page.getByText("req-e2e-001", { exact: true }).first().click();
+  await recordRow.click();
   const dialog = page.getByRole("dialog", { name: "请求详情" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("tab", { name: "概览" })).toHaveAttribute("aria-selected", "true");
@@ -599,7 +607,69 @@ test("records page exposes configurable event columns, request details and filte
   await page.getByRole("button", { name: /CSV/ }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe("monitor-records-e2e.csv");
+  await page.getByRole("button", { name: "列选择" }).click();
+  await page.getByTestId("records-reset-columns").click();
+  await expect(page.getByTestId("records-events-table").locator("thead th")).toHaveCount(10);
+  await expect(page.getByRole("columnheader", { name: /Session ID/ })).toHaveCount(0);
+  await expect(page.getByRole("columnheader", { name: /Cache Read/ })).toHaveCount(0);
+
+  // The existing fixed sidebar occupies 224px; exercise the narrow content layout without covering the card.
+  await page.setViewportSize({ width: 900, height: 844 });
+  await expect(page.getByTestId("records-mobile-list")).toBeVisible();
+  await expect(page.getByTestId("records-events-table")).toBeHidden();
+  await page.getByTestId("records-mobile-list").getByRole("button", { name: "查看请求详情：req-e2e-001" }).click();
+  await expect(page.getByRole("dialog", { name: "请求详情" })).toBeVisible();
 });
+
+test("records migrates untouched legacy columns and preserves customized v3 preferences", async ({ page }) => {
+  await page.route("**/api/records?*", (route) => route.fulfill({
+    status: 200,
+    json: { items: [], nextCursor: null, totalCount: 0, filters: { models: [], routes: [], sources: [], providers: [], serviceTiers: [] } }
+  }));
+  const legacyOrder = [
+    "occurredAt", "isError", "provider", "model", "requestId", "sessionId", "parentSessionId", "executionId", "traceId",
+    "nodeKind", "isFork", "isCompaction", "route", "credentialName", "totalTokens", "inputTokens", "outputTokens",
+    "reasoningTokens", "cacheReadTokens", "cacheCreationTokens", "latencyMs", "ttftMs", "cost", "modelAlias",
+    "responseModel", "apiGroupLabel", "endpoint", "authType", "executorType", "accessProvider", "isNativeKey",
+    "reasoningEffort", "serviceTier", "stream", "generate", "modelSubstituted", "cachedTokens", "statusCode"
+  ];
+  const legacyVisible = [
+    "occurredAt", "isError", "provider", "model", "requestId", "route", "credentialName", "totalTokens",
+    "inputTokens", "outputTokens", "reasoningTokens", "cacheReadTokens", "cacheCreationTokens", "latencyMs",
+    "ttftMs", "cost"
+  ];
+
+  await login(page);
+  await page.evaluate(({ order, visible }) => {
+    localStorage.removeItem("records-column-settings-v4");
+    localStorage.setItem("records-column-settings-v3", JSON.stringify(
+      order.map((key) => ({ key, visible: visible.includes(key), width: null }))
+    ));
+  }, { order: legacyOrder, visible: legacyVisible });
+  await page.goto("/records");
+  await expect(page.getByTestId("records-events-table").locator("thead th")).toHaveCount(10);
+  await expect(page.getByRole("columnheader", { name: "模式" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const raw = localStorage.getItem("records-column-settings-v4");
+    return raw ? JSON.parse(raw).filter((column: { visible: boolean }) => column.visible).length : null;
+  })).toBe(10);
+
+  await page.evaluate(() => {
+    const legacy = JSON.parse(localStorage.getItem("records-column-settings-v3") || "[]");
+    const status = legacy.find((column: { key: string }) => column.key === "isError");
+    if (status) status.visible = false;
+    localStorage.setItem("records-column-settings-v3", JSON.stringify(legacy));
+    localStorage.removeItem("records-column-settings-v4");
+  });
+  await page.reload();
+  await expect(page.getByTestId("records-events-table").locator("thead th")).toHaveCount(15);
+  await expect(page.getByRole("columnheader", { name: "状态" })).toHaveCount(0);
+  await expect(page.getByRole("columnheader", { name: "模式" })).toHaveCount(0);
+  await page.getByRole("button", { name: "列选择" }).click();
+  await page.getByTestId("records-reset-columns").click();
+  await expect(page.getByTestId("records-events-table").locator("thead th")).toHaveCount(10);
+});
+
 test("Pricing Center exposes safe model linking, custom prices, channel multipliers and quote preview", async ({ page }) => {
   const fixture = {
     summary: { observedModels: 1, pricedModels: 0, unpricedModels: 1, ambiguousModels: 1, catalogOfferings: 2 },

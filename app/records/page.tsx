@@ -10,7 +10,7 @@ import {
   type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent
 } from "react";
-import { ArrowDown, ArrowUp, RefreshCw, SlidersHorizontal, X, CalendarRange, Columns3, GripVertical, Download, FileJson, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, RefreshCw, SlidersHorizontal, X, CalendarRange, Columns3, GripVertical, Download, FileJson, Search, ChevronRight } from "lucide-react";
 import RecordDetailsDrawer from "@/app/components/RecordDetailsDrawer";
 import { formatNumberWithCommas } from "@/lib/utils";
 import { DayPicker, type DateRange } from "react-day-picker";
@@ -93,8 +93,8 @@ type ColumnKey =
   | "stream" | "generate" | "modelSubstituted" | "totalTokens" | "inputTokens"
   | "outputTokens" | "reasoningTokens" | "cachedTokens" | "cacheReadTokens"
   | "cacheCreationTokens" | "latencyMs" | "ttftMs" | "statusCode" | "cost"
-  | "sessionId" | "parentSessionId" | "executionId" | "traceId" | "nodeKind" | "isFork" | "isCompaction";
-
+  | "sessionId" | "parentSessionId" | "executionId" | "traceId" | "nodeKind" | "isFork" | "isCompaction"
+  | "requestMode" | "cacheSummary";
 type ColumnSetting = {
   key: ColumnKey;
   visible: boolean;
@@ -138,26 +138,39 @@ const EMPTY_ADVANCED_FILTERS: AdvancedFilters = {
 };
 
 const PAGE_SIZE = 60;
-const COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v3";
-const LEGACY_COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v2";
-const DEFAULT_COLUMN_ORDER: ColumnKey[] = [
+const COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v4";
+const LEGACY_COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v3";
+const OLDER_COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v2";
+// v3 default layout is used only to tell untouched settings apart from explicit preferences.
+const LEGACY_DEFAULT_COLUMN_ORDER: ColumnKey[] = [
   "occurredAt", "isError", "provider", "model", "requestId", "sessionId", "parentSessionId", "executionId", "traceId",
   "nodeKind", "isFork", "isCompaction", "route", "credentialName", "totalTokens", "inputTokens", "outputTokens", "reasoningTokens", "cacheReadTokens",  "cacheCreationTokens", "latencyMs", "ttftMs", "cost", "modelAlias", "responseModel",
   "apiGroupLabel", "endpoint", "authType", "executorType", "accessProvider", "isNativeKey",
   "reasoningEffort", "serviceTier", "stream", "generate", "modelSubstituted",
   "cachedTokens", "statusCode"
 ];
-const DEFAULT_VISIBLE_COLUMNS = new Set<ColumnKey>([
+const LEGACY_DEFAULT_VISIBLE_COLUMNS = new Set<ColumnKey>([
   "occurredAt", "isError", "provider", "model", "requestId", "route", "credentialName",
   "totalTokens", "inputTokens", "outputTokens", "reasoningTokens", "cacheReadTokens",
   "cacheCreationTokens", "latencyMs", "ttftMs", "cost"
 ]);
-
+// Follow OMC's reading order: identity, performance, accounting, caller.
+// The full detailed columns remain in the column chooser and details drawer.
+const COMPACT_COLUMN_ORDER: ColumnKey[] = [
+  "occurredAt", "isError", "provider", "model", "requestMode", "latencyMs",
+  "totalTokens", "cost", "cacheSummary", "route"
+];
+const DEFAULT_COLUMN_ORDER: ColumnKey[] = [
+  ...COMPACT_COLUMN_ORDER,
+  ...LEGACY_DEFAULT_COLUMN_ORDER.filter((key) => !COMPACT_COLUMN_ORDER.includes(key))
+];
+const DEFAULT_VISIBLE_COLUMNS = new Set<ColumnKey>(COMPACT_COLUMN_ORDER);
 const COLUMN_LABELS: Record<ColumnKey, string> = {
   occurredAt: "时间",
   isError: "状态",
   provider: "提供商",
   model: "模型",
+  requestMode: "模式",
   modelAlias: "模型别名",
   responseModel: "响应模型",
   requestId: "Request ID",
@@ -180,6 +193,7 @@ const COLUMN_LABELS: Record<ColumnKey, string> = {
   reasoningTokens: "思考",
   cachedTokens: "Cached",
   cacheReadTokens: "Cache Read",
+  cacheSummary: "缓存",
   cacheCreationTokens: "Cache Write",
   latencyMs: "Latency",
   ttftMs: "TTFT",
@@ -194,34 +208,30 @@ const COLUMN_LABELS: Record<ColumnKey, string> = {
 };
 
 const DEFAULT_COLUMN_WIDTHS: Record<ColumnKey, number> = {
-  occurredAt: 155, isError: 88, provider: 130, model: 210, modelAlias: 160,
-  responseModel: 180, requestId: 220, route: 170, credentialName: 180,
+  occurredAt: 122, isError: 76, provider: 148, model: 218, requestMode: 90, modelAlias: 160,
+  responseModel: 180, requestId: 220, route: 150, credentialName: 180,
   apiGroupLabel: 140, endpoint: 210, authType: 120, executorType: 130,
   accessProvider: 140, isNativeKey: 105, reasoningEffort: 130, serviceTier: 130,
-  stream: 90, generate: 95, modelSubstituted: 105, totalTokens: 115,
+  stream: 90, generate: 95, modelSubstituted: 105, totalTokens: 154,
   inputTokens: 95, outputTokens: 95, reasoningTokens: 105, cachedTokens: 100,
-  cacheReadTokens: 110, cacheCreationTokens: 115, latencyMs: 105, ttftMs: 95,
-  statusCode: 110, cost: 120,
+  cacheReadTokens: 110, cacheCreationTokens: 115, cacheSummary: 90, latencyMs: 102, ttftMs: 95,
+  statusCode: 110, cost: 98,
   sessionId: 190, parentSessionId: 190, executionId: 190, traceId: 190,
   nodeKind: 120, isFork: 90, isCompaction: 110
 };
 
-const FIXED_WIDTH_COLUMNS = new Set<ColumnKey>([
-  "model", "modelAlias", "responseModel", "requestId", "route", "credentialName",
-  "apiGroupLabel", "endpoint", "sessionId", "parentSessionId", "executionId", "traceId"
-]);
-
+const FIXED_WIDTH_COLUMNS = new Set<ColumnKey>(DEFAULT_COLUMN_ORDER.filter((key) => key !== "provider" && key !== "model"));
 const COLUMN_MIN_WIDTH = 80;
 const COLUMN_MAX_WIDTH = 420;
 
 const NON_FIXED_CONTENT_MIN_WIDTHS: Record<ColumnKey, number> = {
-  occurredAt: 150, isError: 88, provider: 120, model: 180, modelAlias: 130,
+  occurredAt: 120, isError: 76, provider: 136, model: 190, requestMode: 85, modelAlias: 130,
   responseModel: 150, requestId: 180, route: 150, credentialName: 150,
   apiGroupLabel: 120, endpoint: 150, authType: 100, executorType: 110,
   accessProvider: 120, isNativeKey: 95, reasoningEffort: 110, serviceTier: 110,
   stream: 80, generate: 85, modelSubstituted: 95, totalTokens: 105,
   inputTokens: 96, outputTokens: 96, reasoningTokens: 96, cachedTokens: 90,
-  cacheReadTokens: 100, cacheCreationTokens: 105, latencyMs: 95, ttftMs: 90,
+  cacheReadTokens: 100, cacheCreationTokens: 105, cacheSummary: 90, latencyMs: 100, ttftMs: 90,
   statusCode: 95, cost: 105,
   sessionId: 170, parentSessionId: 170, executionId: 170, traceId: 170,
   nodeKind: 110, isFork: 80, isCompaction: 95
@@ -240,6 +250,7 @@ const SORT_FIELD_BY_COLUMN: Partial<Record<ColumnKey, SortField>> = {
   reasoningTokens: "reasoningTokens",
   cachedTokens: "cachedTokens",
   cacheReadTokens: "cacheReadTokens",
+  cacheSummary: "cacheReadTokens",
   cacheCreationTokens: "cacheCreationTokens",
   latencyMs: "latencyMs",
   ttftMs: "ttftMs",
@@ -254,17 +265,31 @@ const SORT_FIELD_BY_COLUMN: Partial<Record<ColumnKey, SortField>> = {
   isCompaction: "isCompaction"
 };
 
+function isUntouchedLegacyColumnLayout(raw: unknown): boolean {
+  if (!Array.isArray(raw) || raw.length !== LEGACY_DEFAULT_COLUMN_ORDER.length) return false;
+  return raw.every((item: { key?: unknown; visible?: unknown }, index: number) =>
+    item?.key === LEGACY_DEFAULT_COLUMN_ORDER[index] &&
+    (item.visible !== false) === LEGACY_DEFAULT_VISIBLE_COLUMNS.has(LEGACY_DEFAULT_COLUMN_ORDER[index])
+  );
+}
+
+function defaultColumnSettings(): ColumnSetting[] {
+  return DEFAULT_COLUMN_ORDER.map((key) => ({
+    key,
+    visible: DEFAULT_VISIBLE_COLUMNS.has(key),
+    width: FIXED_WIDTH_COLUMNS.has(key) ? DEFAULT_COLUMN_WIDTHS[key] : null
+  }));
+}
+
 function normalizeColumnSettings(raw: unknown): ColumnSetting[] {
   if (!Array.isArray(raw)) {
-    return DEFAULT_COLUMN_ORDER.map((key) => ({
-      key,
-      visible: DEFAULT_VISIBLE_COLUMNS.has(key),
-      width: FIXED_WIDTH_COLUMNS.has(key) ? DEFAULT_COLUMN_WIDTHS[key] : null
-    }));
+    return defaultColumnSettings();
   }
 
   const seen = new Set<ColumnKey>();
   const input = raw as Array<{ key?: unknown; visible?: unknown; width?: unknown }>;
+  // A customized v3/v2 layout must not grow two surprise visible columns on upgrade.
+  const oldLayout = !input.some((item) => item?.key === "requestMode" || item?.key === "cacheSummary");
   const ordered: ColumnSetting[] = [];
 
   for (const item of input) {
@@ -272,7 +297,7 @@ function normalizeColumnSettings(raw: unknown): ColumnSetting[] {
     if (typeof key !== "string" || !DEFAULT_COLUMN_ORDER.includes(key as ColumnKey)) continue;
     if (seen.has(key as ColumnKey)) continue;
     seen.add(key as ColumnKey);
-    const parsedWidth = Number(item?.width);
+    const parsedWidth = item?.width === null || item?.width === undefined ? Number.NaN : Number(item.width);
     const width = Number.isFinite(parsedWidth)
       ? Math.min(COLUMN_MAX_WIDTH, Math.max(COLUMN_MIN_WIDTH, Math.round(parsedWidth)))
       : FIXED_WIDTH_COLUMNS.has(key as ColumnKey)
@@ -283,7 +308,7 @@ function normalizeColumnSettings(raw: unknown): ColumnSetting[] {
 
   for (const key of DEFAULT_COLUMN_ORDER) {
     if (!seen.has(key)) {
-      ordered.push({ key, visible: DEFAULT_VISIBLE_COLUMNS.has(key), width: FIXED_WIDTH_COLUMNS.has(key) ? DEFAULT_COLUMN_WIDTHS[key] : null });
+      ordered.push({ key, visible: DEFAULT_VISIBLE_COLUMNS.has(key) && !(oldLayout && (key === "requestMode" || key === "cacheSummary")), width: FIXED_WIDTH_COLUMNS.has(key) ? DEFAULT_COLUMN_WIDTHS[key] : null });
     }
   }
   return ordered;
@@ -295,6 +320,11 @@ const TOKEN_COLORS = {
   reasoning: "#fbbf24",
   cached: "#c084fc"
 };
+const RIGHT_ALIGNED_COLUMNS = new Set<ColumnKey>([
+  "latencyMs", "ttftMs", "totalTokens", "inputTokens", "outputTokens",
+  "reasoningTokens", "cachedTokens", "cacheSummary", "cacheReadTokens",
+  "cacheCreationTokens", "cost", "statusCode"
+]);
 
 function formatTimestamp(ts: string) {
   const date = new Date(ts);
@@ -316,6 +346,14 @@ function formatCost(value: number) {
   // 0 值显示为 $0，非0值保留5位小数
   if (value === 0) return "$0";
   return `$${value.toFixed(5)}`;
+}
+function formatCompactTokens(value: number): string {
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
+
+function formatDuration(value: number | null): string {
+  if (value === null) return "—";
+  return value >= 1000 ? (value / 1000).toFixed(value >= 10000 ? 1 : 2) + " s" : Math.round(value) + " ms";
 }
 
 function formatDateInput(date: Date) {
@@ -431,13 +469,7 @@ export default function RecordsPage() {
 
   const [sortKeys, setSortKeys] = useState<SortKey[]>([{ field: "occurredAt", order: "desc" }]);
   const [hasLoaded, setHasLoaded] = useState(false);
-  const [columnSettings, setColumnSettings] = useState<ColumnSetting[]>(
-    DEFAULT_COLUMN_ORDER.map((key) => ({
-      key,
-      visible: DEFAULT_VISIBLE_COLUMNS.has(key),
-      width: FIXED_WIDTH_COLUMNS.has(key) ? DEFAULT_COLUMN_WIDTHS[key] : null
-    }))
-  );
+  const [columnSettings, setColumnSettings] = useState<ColumnSetting[]>(defaultColumnSettings);
   const [columnSettingsReady, setColumnSettingsReady] = useState(false);
   const [columnPanelOpen, setColumnPanelOpen] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<{ id: number; occurredAt: string } | null>(null);
@@ -548,19 +580,19 @@ export default function RecordsPage() {
     }
 
     const manualNonFixed: ColumnKey[] = [];
-    const autoNonFixed: Array<Exclude<ColumnKey, "model" | "route" | "credentialName">> = [];
+    const autoNonFixed: ColumnKey[] = [];
 
     for (const key of nonFixedColumns) {
       const setting = columnSettingMap.get(key);
       if (setting?.width !== null && setting?.width !== undefined) {
         manualNonFixed.push(key);
       } else {
-        autoNonFixed.push(key as Exclude<ColumnKey, "model" | "route" | "credentialName">);
+        autoNonFixed.push(key);
       }
     }
 
     for (const key of manualNonFixed) {
-      const minRequired = NON_FIXED_CONTENT_MIN_WIDTHS[key as Exclude<ColumnKey, "model" | "route" | "credentialName">];
+      const minRequired = NON_FIXED_CONTENT_MIN_WIDTHS[key];
       const width = Math.max(getBaseColumnWidth(key), minRequired);
       result.set(key, width);
       usedWidth += width;
@@ -899,13 +931,6 @@ export default function RecordsPage() {
     resetAndFetch(false);
   }, [appliedModel, appliedRoute, appliedSource, appliedProvider, appliedServiceTier, appliedStatus, appliedCurrency, appliedAdvancedFilters, appliedStart, appliedEnd, resetAndFetch]);
 
-  const costTone = useCallback((cost: number) => {
-    if (cost >= 5) return "bg-red-500/20 text-red-300 ring-1 ring-red-500/40";
-    if (cost >= 1) return "bg-amber-400/20 text-amber-200 ring-1 ring-amber-400/40";
-    if (cost > 0) return "bg-emerald-400/20 text-emerald-200 ring-1 ring-emerald-400/40";
-    return "bg-slate-700/60 text-slate-300 ring-1 ring-slate-600";
-  }, []);
-
   const statusTone = useCallback((isError: boolean) => {
     return isError
       ? "bg-rose-500/20 text-rose-200 ring-1 ring-rose-500/40"
@@ -988,22 +1013,57 @@ export default function RecordsPage() {
         : <span className={value ? "text-emerald-300" : "text-slate-400"}>{value ? "是" : "否"}</span>;
 
       switch (columnKey) {
-        case "occurredAt":
-          return <div className="text-sm font-semibold text-white">{formatTimestamp(row.occurredAt)}</div>;
+        case "occurredAt": {
+          const timestamp = formatTimestamp(row.occurredAt);
+          const splitAt = timestamp.lastIndexOf(" ");
+          return (
+            <time dateTime={row.occurredAt} title={timestamp} className="block min-w-0 tabular-nums">
+              <span className="block text-xs font-medium text-slate-100">{splitAt < 0 ? timestamp : timestamp.slice(0, splitAt)}</span>
+              {splitAt >= 0 ? <span className="block text-[11px] text-slate-500">{timestamp.slice(splitAt + 1)}</span> : null}
+            </time>
+          );
+        }
         case "isError":
           return (
-            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${statusTone(row.isError)}`}>
+            <span className={"inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs font-medium " + statusTone(row.isError)}>
+              <span className={"h-1.5 w-1.5 rounded-full " + (row.isError ? "bg-rose-300" : "bg-sky-300")} />
               {row.isError ? "失败" : "成功"}
             </span>
           );
         case "provider":
           return (
-            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${providerTone(row.provider)}`}>
-              {row.provider || "—"}
+            <span className={"inline-flex max-w-full items-center rounded-md px-1.5 py-0.5 text-xs font-medium " + providerTone(row.provider)} title={row.provider || ""}>
+              <span className="truncate">{row.provider || "—"}</span>
             </span>
           );
         case "model":
-          return <div className="max-w-[220px] truncate font-semibold text-white" title={row.model}>{row.model}</div>;
+          return (
+            <div className="min-w-0 max-w-full" title={row.model}>
+              <div className="truncate text-[13px] font-semibold text-slate-100">{row.model}</div>
+              {row.modelSubstituted && row.responseModel && row.responseModel !== row.model ? (
+                <div className="truncate text-[11px] text-indigo-300" title={"响应模型：" + row.responseModel}>
+                  {"↳ " + row.responseModel}
+                </div>
+              ) : row.modelAlias && row.modelAlias !== row.model ? (
+                <div className="truncate text-[11px] text-slate-500" title={"模型别名：" + row.modelAlias}>
+                  {row.modelAlias}
+                </div>
+              ) : null}
+            </div>
+          );
+        case "requestMode":
+          return (
+            <div className="min-w-0 text-xs">
+              <div className="text-slate-200">{row.stream === null ? "—" : row.stream ? "流式" : "非流式"}</div>
+              {row.reasoningEffort ? (
+                <div className="truncate text-[11px] text-slate-500" title={"推理强度：" + row.reasoningEffort}>
+                  {row.reasoningEffort}
+                </div>
+              ) : row.generate === false ? (
+                <div className="text-[11px] text-slate-500">预检</div>
+              ) : null}
+            </div>
+          );
         case "modelAlias": return textCell(row.modelAlias, 160);
         case "responseModel": return textCell(row.responseModel, 180);
         case "requestId": return <span className="block max-w-[220px] truncate font-mono text-xs text-indigo-200" title={row.requestId ?? ""}>{row.requestId || "—"}</span>;
@@ -1015,7 +1075,13 @@ export default function RecordsPage() {
         case "isFork": return booleanCell(row.isFork);
         case "isCompaction": return booleanCell(row.isCompaction);
 
-        case "route": return textCell(row.route, 170);
+        case "route":
+          return (
+            <div className="min-w-0 max-w-full">
+              <span className="block truncate font-mono text-xs text-slate-200" title={row.route || ""}>{row.route || "—"}</span>
+              {row.credentialName ? <span className="block truncate text-[11px] text-slate-500" title={row.credentialName}>{row.credentialName}</span> : null}
+            </div>
+          );
         case "credentialName": return textCell(row.credentialName, 180);
         case "apiGroupLabel": return textCell(row.apiGroupLabel, 140);
         case "endpoint": return textCell(row.endpoint, 210);
@@ -1029,27 +1095,60 @@ export default function RecordsPage() {
         case "generate": return booleanCell(row.generate);
         case "modelSubstituted": return booleanCell(row.modelSubstituted);
         case "totalTokens":
-          return <span className="rounded-full bg-indigo-500/20 px-2.5 py-1 text-xs font-semibold text-indigo-200 ring-1 ring-indigo-500/30">{formatNumberWithCommas(row.totalTokens)}</span>;
+          return (
+            <div className="min-w-0 tabular-nums" title={"总计 " + formatNumberWithCommas(row.totalTokens) + " · 输入 " + formatNumberWithCommas(row.inputTokens) + " · 输出 " + formatNumberWithCommas(row.outputTokens) + " · 思考 " + formatNumberWithCommas(row.reasoningTokens)}>
+              <div className="whitespace-nowrap text-[13px] font-semibold text-slate-100">
+                {formatCompactTokens(row.totalTokens)} <span className="text-[10px] font-normal text-slate-500">tokens</span>
+              </div>
+              <div className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-[11px] text-slate-400">
+                <span className="shrink-0">↑ {formatCompactTokens(row.inputTokens)}</span>
+                <span className="shrink-0">↓ {formatCompactTokens(row.outputTokens)}</span>
+                {row.reasoningTokens > 0 ? <span className="shrink-0 text-amber-300/80">思 {formatCompactTokens(row.reasoningTokens)}</span> : null}
+              </div>
+            </div>
+          );
         case "inputTokens": return <span style={{ color: TOKEN_COLORS.input }}>{formatNumberWithCommas(row.inputTokens)}</span>;
         case "outputTokens": return <span style={{ color: TOKEN_COLORS.output }}>{formatNumberWithCommas(row.outputTokens)}</span>;
         case "reasoningTokens": return <span style={{ color: TOKEN_COLORS.reasoning }}>{formatNumberWithCommas(row.reasoningTokens)}</span>;
         case "cachedTokens": return <span style={{ color: TOKEN_COLORS.cached }}>{formatNumberWithCommas(row.cachedTokens)}</span>;
+        case "cacheSummary":
+          return (
+            <div className="min-w-0 tabular-nums" title={"缓存读取 " + formatNumberWithCommas(row.cacheReadTokens) + " · 缓存写入 " + formatNumberWithCommas(row.cacheCreationTokens)}>
+              <div className="text-[13px] font-medium text-slate-200">{formatCompactTokens(row.cacheReadTokens)}</div>
+              <div className="whitespace-nowrap text-[11px] text-slate-500">
+                {row.cacheCreationTokens > 0 ? "写 " + formatCompactTokens(row.cacheCreationTokens) : "读取"}
+              </div>
+            </div>
+          );
         case "cacheReadTokens": return <span className="tabular-nums text-violet-300">{formatNumberWithCommas(row.cacheReadTokens)}</span>;
         case "cacheCreationTokens": return <span className="tabular-nums text-fuchsia-300">{formatNumberWithCommas(row.cacheCreationTokens)}</span>;
-        case "latencyMs": return numberCell(row.latencyMs, " ms");
+        case "latencyMs":
+          return (
+            <div className="min-w-0 tabular-nums">
+              <div className="whitespace-nowrap text-[13px] font-semibold text-slate-100">{formatDuration(row.latencyMs)}</div>
+              {row.ttftMs !== null ? <div className="whitespace-nowrap text-[11px] text-slate-500">TTFT {formatDuration(row.ttftMs)}</div> : null}
+            </div>
+          );
         case "ttftMs": return numberCell(row.ttftMs, " ms");
         case "statusCode": return numberCell(row.statusCode);
         case "cost":
           return (
-            <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${costTone(row.cost ?? 0)}`}>
-              {row.cost === null ? "未定价" : `${formatCost(row.cost)} ${row.costCurrency}`}
-            </span>
+            <div className="min-w-0 tabular-nums">
+              {row.cost === null ? (
+                <span className="text-xs text-amber-300" title={"定价状态：" + row.pricingStatus}>未定价</span>
+              ) : (
+                <>
+                  <div className="whitespace-nowrap text-[13px] font-medium text-slate-100">{row.costCurrency === "USD" ? formatCost(row.cost) : (row.cost === 0 ? "0" : row.cost.toFixed(5))}</div>
+                  {row.costCurrency !== "USD" ? <div className="text-[11px] text-slate-500">{row.costCurrency}</div> : null}
+                </>
+              )}
+            </div>
           );
         default:
           return null;
       }
     },
-    [costTone, providerTone, statusTone]
+    [providerTone, statusTone]
   );
   const filterSummary = useMemo(() => {
     const parts: string[] = [];
@@ -1132,19 +1231,15 @@ export default function RecordsPage() {
       return;
     }
     try {
-      const raw = window.localStorage.getItem(COLUMN_SETTINGS_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_COLUMN_SETTINGS_STORAGE_KEY);
+      const current = window.localStorage.getItem(COLUMN_SETTINGS_STORAGE_KEY);
+      const legacy = window.localStorage.getItem(LEGACY_COLUMN_SETTINGS_STORAGE_KEY) ?? window.localStorage.getItem(OLDER_COLUMN_SETTINGS_STORAGE_KEY);
+      const raw = current ?? legacy;
       if (raw) {
         const parsed = JSON.parse(raw) as unknown;
-        setColumnSettings(normalizeColumnSettings(parsed));
+        if (current || !isUntouchedLegacyColumnLayout(parsed)) setColumnSettings(normalizeColumnSettings(parsed));
       }
     } catch {
-      setColumnSettings(
-        DEFAULT_COLUMN_ORDER.map((key) => ({
-          key,
-          visible: DEFAULT_VISIBLE_COLUMNS.has(key),
-          width: FIXED_WIDTH_COLUMNS.has(key) ? DEFAULT_COLUMN_WIDTHS[key] : null
-        }))
-      );
+      setColumnSettings(defaultColumnSettings());
     } finally {
       setColumnSettingsReady(true);
     }
@@ -1419,7 +1514,17 @@ export default function RecordsPage() {
 
             {columnPanelOpen ? (
               <div className="absolute right-0 z-30 mt-2 w-[300px] rounded-2xl border border-slate-700 bg-slate-900 p-3 shadow-xl">
-                {/* <div className="mb-2 text-xs text-slate-400">勾选显示列，按住手柄拖拽改顺序，表头右侧可拖拽列宽</div> */}
+                <div className="mb-2 flex items-center justify-between gap-2 text-xs text-slate-400">
+                  <span>显示字段 · 拖拽排序</span>
+                  <button
+                    type="button"
+                    data-testid="records-reset-columns"
+                    onClick={() => { setColumnSettings(defaultColumnSettings()); setColumnPanelOpen(false); }}
+                    className="rounded-md px-2 py-1 text-indigo-300 hover:bg-slate-800 hover:text-indigo-200"
+                  >
+                    恢复简洁布局
+                  </button>
+                </div>
                 <div className="max-h-72 space-y-1 overflow-auto pr-1">
                   {columnSettings.map((column) => (
                     <div
@@ -1508,92 +1613,127 @@ export default function RecordsPage() {
         <p className="mt-3 text-xs text-slate-500">当前筛选：{filterSummary}</p>
       </section>
 
-      <section className={`mt-5 rounded-2xl bg-slate-800/40 p-4 shadow-sm ring-1 ring-slate-700 ${loadingEmpty && !hasLoaded ? "min-h-[100vh]" : ""}`}>
+      <section className={"mt-5 rounded-2xl border border-slate-700/70 bg-slate-900/60 p-3 shadow-sm md:p-4 " + (loadingEmpty && !hasLoaded ? "min-h-[100vh]" : "")}>
         {(!loadingEmpty || hasLoaded) ? (
-          <div ref={tableWrapperRef} className="overflow-auto">
-            <table className="min-w-full w-full table-fixed border-separate border-spacing-y-2">
-              <thead className="sticky top-0 z-10">
-                <tr className="text-left text-[13px] uppercase tracking-wide text-slate-400">
-                  {visibleColumns.map((columnKey) => {
-                    const width = adaptiveWidthMap.get(columnKey) ?? DEFAULT_COLUMN_WIDTHS[columnKey];
-                    return (
-                      <th
-                        key={columnKey}
-                        className="group/col relative px-3 py-2"
-                        style={width ? { width: `${width}px`, minWidth: `${width}px` } : undefined}
-                      >
-                        {renderHeaderByColumn(columnKey)}
-                        <div
-                          role="separator"
-                          aria-orientation="vertical"
-                          onMouseDown={(event) => beginResizeColumn(columnKey, event)}
-                          className="group absolute right-0 top-0 h-full w-3 cursor-col-resize select-none opacity-0 pointer-events-none transition-opacity duration-250 group-hover/col:opacity-100 group-hover/col:pointer-events-auto"
-                          title="拖拽调整列宽"
-                        >
-                          <span className="absolute right-[4px] top-2 bottom-2 w-px rounded bg-gradient-to-b from-transparent via-slate-400/35 to-transparent opacity-70 transition-all duration-150 group-hover:via-indigo-300/60 group-hover:opacity-100" />
-                          <span className="pointer-events-none absolute right-[3px] top-1/2 h-3 w-[3px] -translate-y-1/2 rounded-full bg-slate-400/35 transition-colors duration-150 group-hover:bg-indigo-300/65" />
-                        </div>
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
-              <tbody className="text-sm">
-                {records.map((row) => (
-                  <tr
-                    key={row.id}
-                    tabIndex={0}
-                    aria-label={`查看请求详情：${row.requestId || row.id}`}
-                    aria-expanded={selectedRecord?.id === row.id}
-                    onClick={() => setSelectedRecord({ id: row.id, occurredAt: row.occurredAt })}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        setSelectedRecord({ id: row.id, occurredAt: row.occurredAt });
-                      }
-                    }}
-                    className="group h-13 cursor-pointer rounded-lg bg-slate-900/70 text-slate-100 shadow-sm ring-1 ring-slate-800 transition hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                  >
-                    {visibleColumns.map((columnKey, index) => {
+          <>
+            <div ref={tableWrapperRef} data-testid="records-table-scroll" className="hidden overflow-x-auto rounded-xl lg:block">
+              <table data-testid="records-events-table" className="w-full min-w-full table-fixed border-collapse">
+                <thead className="sticky top-0 z-10 bg-slate-900/95">
+                  <tr className="border-b border-slate-700/60 text-[11px] font-medium tracking-wide text-slate-400">
+                    {visibleColumns.map((columnKey) => {
                       const width = adaptiveWidthMap.get(columnKey) ?? DEFAULT_COLUMN_WIDTHS[columnKey];
-                      const isFirst = index === 0;
-                      const isLast = index === visibleColumns.length - 1;
                       return (
-                        <td
-                          key={`${row.id}-${columnKey}`}
-                          className={`whitespace-nowrap border-y border-transparent px-3 py-3 transition group-hover:border-indigo-400/40 ${
-                            isFirst
-                              ? "rounded-l-lg border-l border-l-transparent group-hover:border-l-indigo-400/40 group-hover:shadow-[-10px_0_16px_-10px_rgba(99,102,241,0.48)]"
-                              : ""
-                          } ${
-                            isLast
-                              ? "rounded-r-lg border-r border-r-transparent group-hover:border-r-indigo-400/40 group-hover:shadow-[10px_0_16px_-10px_rgba(99,102,241,0.48)]"
-                              : ""
-                          }`}
-                          style={width ? { width: `${width}px`, minWidth: `${width}px` } : undefined}
+                        <th
+                          key={columnKey}
+                          className={"group/col relative whitespace-nowrap px-3 py-3 font-medium " + (RIGHT_ALIGNED_COLUMNS.has(columnKey) ? "text-right" : "text-left")}
+                          style={{ width: width + "px", minWidth: width + "px" }}
                         >
-                          {renderCellByColumn(columnKey, row)}
-                        </td>
+                          {renderHeaderByColumn(columnKey)}
+                          <div
+                            role="separator"
+                            aria-orientation="vertical"
+                            onMouseDown={(event) => beginResizeColumn(columnKey, event)}
+                            className="pointer-events-none absolute right-0 top-0 h-full w-2 cursor-col-resize select-none opacity-0 transition-opacity group-hover/col:pointer-events-auto group-hover/col:opacity-100"
+                            title="拖拽调整列宽"
+                          >
+                            <span className="absolute right-[2px] top-2 bottom-2 w-px bg-indigo-300/50" />
+                          </div>
+                        </th>
                       );
                     })}
                   </tr>
-                ))}
-                {loading && records.length === 0 && hasLoaded ? (
-                  [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(i => (
-                    <tr key={`skel-${i}`} className="h-13">
-                      {visibleColumns.map(colKey => (
-                        <td key={colKey} className="px-3 py-3">
-                          <div className="h-3 w-4/5 animate-pulse rounded bg-slate-700/60" />
-                        </td>
-                      ))}
+                </thead>
+                <tbody className="text-[13px]">
+                  {records.map((row) => (
+                    <tr
+                      key={row.id}
+                      tabIndex={0}
+                      aria-label={"查看请求详情：" + (row.requestId || row.id)}
+                      aria-expanded={selectedRecord?.id === row.id}
+                      onClick={() => setSelectedRecord({ id: row.id, occurredAt: row.occurredAt })}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSelectedRecord({ id: row.id, occurredAt: row.occurredAt });
+                        }
+                      }}
+                      className={"group h-[68px] cursor-pointer text-slate-100 transition-colors even:bg-slate-800/20 hover:bg-slate-800/70 focus:outline-none focus-visible:bg-indigo-500/15 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 " + (selectedRecord?.id === row.id ? "bg-indigo-500/10" : "")}
+                    >
+                      {visibleColumns.map((columnKey, index) => {
+                        const width = adaptiveWidthMap.get(columnKey) ?? DEFAULT_COLUMN_WIDTHS[columnKey];
+                        const isLast = index === visibleColumns.length - 1;
+                        return (
+                          <td
+                            key={row.id + "-" + columnKey}
+                            className={"relative min-w-0 overflow-hidden whitespace-nowrap px-3 py-3 align-middle " + (RIGHT_ALIGNED_COLUMNS.has(columnKey) ? "text-right" : "text-left") + (isLast ? " pr-7" : "")}
+                            style={{ width: width + "px", minWidth: width + "px" }}
+                          >
+                            {renderCellByColumn(columnKey, row)}
+                            {isLast ? (
+                              <ChevronRight aria-hidden="true" className="pointer-events-none absolute right-1 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-600 transition-colors group-hover:text-indigo-300" />
+                            ) : null}
+                          </td>
+                        );
+                      })}
                     </tr>
-                  ))
-                ) : null}
-              </tbody>
-            </table>
-          </div>
+                  ))}
+                  {loading && records.length === 0 && hasLoaded
+                    ? Array.from({ length: 12 }, (_, i) => (
+                      <tr key={"skel-" + i} className="h-[68px]">
+                        {visibleColumns.map((columnKey) => (
+                          <td key={columnKey} className="px-3 py-3">
+                            <div className="h-3 w-4/5 animate-pulse rounded bg-slate-700/60" />
+                          </td>
+                        ))}
+                      </tr>
+                    ))
+                    : null}
+                </tbody>
+              </table>
+            </div>
+            <div data-testid="records-mobile-list" className="space-y-2 lg:hidden">
+              {records.map((row) => (
+                <button
+                  type="button"
+                  key={row.id}
+                  onClick={() => setSelectedRecord({ id: row.id, occurredAt: row.occurredAt })}
+                  aria-label={"查看请求详情：" + (row.requestId || row.id)}
+                  className="block w-full rounded-xl border border-slate-700/60 bg-slate-800/40 p-3 text-left transition hover:border-indigo-400/50 hover:bg-slate-800/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                >
+                  <div className="flex min-w-0 items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-semibold text-slate-100" title={row.model}>{row.model}</span>
+                        <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-slate-500" />
+                      </div>
+                      <div className="mt-1 truncate text-xs text-slate-400">
+                        {row.provider || "—"} <span className="mx-1 text-slate-600">·</span> {formatTimestamp(row.occurredAt)}
+                      </div>
+                    </div>
+                    <span className={"shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium " + statusTone(row.isError)}>
+                      {row.isError ? "失败" : "成功"}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-3 gap-3 border-t border-slate-700/50 pt-3">
+                    <div className="min-w-0">
+                      <div className="text-[11px] text-slate-500">耗时</div>
+                      <div className="mt-1 truncate text-xs font-medium tabular-nums text-slate-200">{formatDuration(row.latencyMs)}</div>
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[11px] text-slate-500">Tokens</div>
+                      <div className="mt-1 truncate text-xs font-medium tabular-nums text-slate-200">{formatCompactTokens(row.totalTokens)}</div>
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[11px] text-slate-500">费用</div>
+                      <div className="mt-1 truncate text-xs font-medium tabular-nums text-slate-200">{row.cost === null ? "未定价" : row.costCurrency === "USD" ? formatCost(row.cost) : `${row.cost.toFixed(5)} ${row.costCurrency}`}</div>
+                    </div>
+                  </div>
+                  <div className="mt-2 truncate font-mono text-[11px] text-slate-500" title={row.route}>{row.route}</div>
+                </button>
+              ))}
+            </div>
+          </>
         ) : null}
-
         {loadingEmpty && !hasLoaded ? (
           <div className="mt-4 grid min-h-[55vh] gap-3">
             {[1, 2, 3].map((i) => (
