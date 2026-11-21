@@ -3,16 +3,10 @@
 import { useEffect, useState, useCallback, useMemo, useRef, startTransition, type FormEvent } from "react";
 import { ResponsiveContainer, LineChart, Line, Area, CartesianGrid, XAxis, YAxis, Tooltip, BarChart, Bar, Legend, ComposedChart, PieChart, Pie, Cell } from "recharts";
 import { formatCurrency, formatNumber, formatCompactNumber, formatNumberWithCommas, formatHourLabel } from "@/lib/utils";
-import { AlertTriangle, Info, LucideIcon, Activity, Save, RefreshCw, Moon, Sun, Pencil, Trash2, Maximize2, CalendarRange, X, DollarSign, Search, ChevronDown } from "lucide-react";
+import { AlertTriangle, Info, LucideIcon, Activity, Save, RefreshCw, Moon, Sun, Pencil, Trash2, Maximize2, CalendarRange, X, Search, ChevronDown } from "lucide-react";
 import type { ModelPrice, UsageOverview, UsageSeriesPoint } from "@/lib/types";
 import { Modal } from "@/app/components/Modal";
-
-// 同步状态类型定义
-type SyncStatus = 
-  | { type: 'idle' }
-  | { type: 'syncing'; message?: string }
-  | { type: 'success'; message: string; summary?: { total: number; updated: number; skipped: number; failed: number } }
-  | { type: 'error'; message: string };
+import { useAutoRefresh } from "@/app/components/AutoRefreshContext";
 
 // 饼图颜色
 const PIE_COLORS = [
@@ -31,8 +25,9 @@ type OverviewAPIResponse = {
   meta?: OverviewMeta;
   filters?: { models: string[]; routes: string[]; names: string[]; providers?: string[]; serviceTiers?: string[] };
   costByCurrency?: Array<{currency:string;costNanos:number | null}>;
-  pricingCoverage?: {priced:number;unpriced:number;partial:number;rate:number};
 };
+
+
 
 type PriceForm = {
   model: string;
@@ -50,8 +45,6 @@ const hourFormatter = new Intl.DateTimeFormat("en-CA", {
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-// 可通过 NEXT_PUBLIC_SYNC_TIMEOUT_MS 环境变量调节（毫秒），默认 120 秒
-const SYNC_CLIENT_TIMEOUT_MS = Number(process.env.NEXT_PUBLIC_SYNC_TIMEOUT_MS) || 120_000;
 
 function formatDateInputValue(date: Date) {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -129,6 +122,7 @@ function buildHourlyLineStyle(pointCount: number, baseStrokeWidth: number) {
 }
 
 export default function DashboardPage() {
+  const { autoRefresh, setAutoRefresh } = useAutoRefresh();
   const [mounted, setMounted] = useState(false);
   const [prices, setPrices] = useState<ModelPrice[]>([]);
 
@@ -137,7 +131,7 @@ export default function DashboardPage() {
   const defaultStart = new Date(defaultEnd.getTime() - 6 * DAY_MS);
   const fallbackRange = { mode: "preset" as const, days: 14, start: formatDateInputValue(defaultStart), end: formatDateInputValue(defaultEnd) };
 
-  const [rangeMode, setRangeMode] = useState<"preset" | "custom">(fallbackRange.mode);
+  const [rangeMode, setRangeMode] = useState<"all" | "preset" | "custom">(fallbackRange.mode);
   const [rangeDays, setRangeDays] = useState(fallbackRange.days);
   const [customStart, setCustomStart] = useState(fallbackRange.start);
   const [customEnd, setCustomEnd] = useState(fallbackRange.end);
@@ -149,8 +143,8 @@ export default function DashboardPage() {
     const saved = window.localStorage.getItem("rangeSelection");
     if (saved) {
       try {
-        const parsed = JSON.parse(saved) as { mode?: "preset" | "custom"; days?: number; start?: string; end?: string };
-        if (parsed && (parsed.mode === "preset" || parsed.mode === "custom")) {
+        const parsed = JSON.parse(saved) as { mode?: "all" | "preset" | "custom"; days?: number; start?: string; end?: string };
+        if (parsed && (parsed.mode === "all" || parsed.mode === "preset" || parsed.mode === "custom")) {
           setRangeMode(parsed.mode);
           if (Number.isFinite(parsed.days)) {
             setRangeDays(Math.max(1, Number(parsed.days)));
@@ -168,7 +162,6 @@ export default function DashboardPage() {
   const [bucketTimezone, setBucketTimezone] = useState<string | undefined>(undefined);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [overviewEmpty, setOverviewEmpty] = useState(false);
-  const [pricingCoverage, setPricingCoverage] = useState<OverviewAPIResponse["pricingCoverage"]>();
   const [costByCurrency, setCostByCurrency] = useState<OverviewAPIResponse["costByCurrency"]>([]);
   const [loadingOverview, setLoadingOverview] = useState(true);
   const [customPickerOpen, setCustomPickerOpen] = useState(false);
@@ -201,23 +194,15 @@ export default function DashboardPage() {
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const saveStatusTimerRef = useRef<number | null>(null);
   const [saving, setSaving] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<string | null>(null);
-  const syncStatusTimerRef = useRef<number | null>(null);
-  const [syncStatusClosing, setSyncStatusClosing] = useState(false);
   const [saveStatusClosing, setSaveStatusClosing] = useState(false);
-  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(() => {
-    if (typeof window === "undefined") return null;
-    const saved = window.localStorage.getItem("lastSyncTime");
-    return saved ? new Date(saved) : null;
-  });
-  const [lastInsertedDelta, setLastInsertedDelta] = useState(() => {
-    if (typeof window === "undefined") return 0;
-    const saved = window.localStorage.getItem("lastInsertedDelta");
-    const parsed = saved ? Number.parseInt(saved, 10) : 0;
-    return Number.isFinite(parsed) ? parsed : 0;
-  });
+  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [refreshStatus, setRefreshStatus] = useState<string | null>(null);
+  const refreshStatusTimerRef = useRef<number | null>(null);
+  const [refreshStatusClosing, setRefreshStatusClosing] = useState(false);
+  const refreshRequestSequenceRef = useRef(0);
+  const refreshRequestRef = useRef<{ source: "manual" | "auto"; id: number } | null>(null);
+  const lastOverviewCountRef = useRef<{ filterKey: string; totalRequests: number } | null>(null);
   const [ready, setReady] = useState(false);
   const [pieMode, setPieMode] = useState<"tokens" | "requests">("tokens");
   const [darkMode, setDarkMode] = useState(true);
@@ -229,28 +214,9 @@ export default function DashboardPage() {
   const pieChartContainerRef = useRef<HTMLDivElement | null>(null);
   const pieChartFullscreenContainerRef = useRef<HTMLDivElement | null>(null);
   const pieLegendClearTimerRef = useRef<number | null>(null);
-  const syncingRef = useRef(false);
   const skipOverviewCacheRef = useRef(false);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  const [syncingPrices, setSyncingPrices] = useState(false);
-  // const [pricesSyncStatus, setPricesSyncStatus] = useState<SyncStatus>({ type: 'idle' }); // 已禁用 toast 通知
-  // const pricesSyncStatusTimerRef = useRef<number | null>(null); // 已禁用 toast 通知
-  const [pricesSyncModalOpen, setPricesSyncModalOpen] = useState(false);
-  const [pricesSyncData, setPricesSyncData] = useState<{
-    summary?: { total: number; updated: number; skipped: number; failed: number };
-    details?: {
-      model: string;
-      status: string;
-      reason?: string;
-      matchedWith?: string;
-      selectionSummary?: string;
-      selectionDebug?: string;
-    }[];
-    error?: string;
-  } | null>(null);
 
-  // 自动刷新状态
-  const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshPreset, setRefreshPreset] = useState("60"); // "60"|"300"|"900"|"1800"|"3600"|"custom"
   const [customIntervalInput, setCustomIntervalInput] = useState("60");
   const [customIntervalUnit, setCustomIntervalUnit] = useState<"s" | "m">("s");
@@ -439,14 +405,6 @@ export default function DashboardPage() {
     };
   }, [pieTooltipOpen, cancelPieLegendClear]);
 
-  // 关闭syncStatus toast
-  const closeSyncStatus = useCallback(() => {
-    setSyncStatusClosing(true);
-    setTimeout(() => {
-      setSyncStatus(null);
-      setSyncStatusClosing(false);
-    }, 400);
-  }, []);
 
   // 关闭saveStatus toast  
   const closeSaveStatus = useCallback(() => {
@@ -457,26 +415,6 @@ export default function DashboardPage() {
     }, 400);
   }, []);
 
-  // 自动清除 syncStatus toast
-  useEffect(() => {
-    if (!syncStatus) return;
-    
-    if (syncStatusTimerRef.current !== null) {
-      window.clearTimeout(syncStatusTimerRef.current);
-    }
-    
-    syncStatusTimerRef.current = window.setTimeout(() => {
-      closeSyncStatus();
-      syncStatusTimerRef.current = null;
-    }, 10000);
-    
-    return () => {
-      if (syncStatusTimerRef.current !== null) {
-        window.clearTimeout(syncStatusTimerRef.current);
-        syncStatusTimerRef.current = null;
-      }
-    };
-  }, [syncStatus, closeSyncStatus]);
 
   // 自动清除 saveStatus toast
   useEffect(() => {
@@ -498,6 +436,35 @@ export default function DashboardPage() {
       }
     };
   }, [saveStatus, closeSaveStatus]);
+
+  const closeRefreshStatus = useCallback(() => {
+    if (refreshStatusTimerRef.current !== null) {
+      window.clearTimeout(refreshStatusTimerRef.current);
+      refreshStatusTimerRef.current = null;
+    }
+    setRefreshStatusClosing(true);
+    setTimeout(() => {
+      setRefreshStatus(null);
+      setRefreshStatusClosing(false);
+    }, 400);
+  }, []);
+
+  useEffect(() => {
+    if (!refreshStatus) return;
+    if (refreshStatusTimerRef.current !== null) {
+      window.clearTimeout(refreshStatusTimerRef.current);
+    }
+    refreshStatusTimerRef.current = window.setTimeout(() => {
+      closeRefreshStatus();
+      refreshStatusTimerRef.current = null;
+    }, 10000);
+    return () => {
+      if (refreshStatusTimerRef.current !== null) {
+        window.clearTimeout(refreshStatusTimerRef.current);
+        refreshStatusTimerRef.current = null;
+      }
+    };
+  }, [refreshStatus, closeRefreshStatus]);
 
   // 自动清除 pricesSyncStatus toast - 已禁用
   /*
@@ -532,85 +499,17 @@ export default function DashboardPage() {
     }
   }, []);
 
-  // 执行数据同步
-  const doSync = useCallback(async (showMessage = true, triggerRefresh = true, timeout = SYNC_CLIENT_TIMEOUT_MS) => {
-    if (syncingRef.current) return;
-    syncingRef.current = true;
-    setSyncing(true);
-    setSyncStatus(null);
-    try {
-      // 创建超时控制器（默认 60 秒，首屏加载时为 5 秒）
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
-      
-      const res = await fetch("/api/sync", { 
-        method: "POST", 
-        cache: "no-store",
-        signal: controller.signal 
-      });
-      clearTimeout(timeoutId);
-      
-      const data = await res.json();
-      if (!res.ok) {
-        const errorMsg = `同步失败: ${data.error || res.statusText}`;
-        setSyncStatus(errorMsg);
-        if (typeof window !== "undefined") {
-          window.localStorage.setItem("lastSyncStatus", errorMsg);
-        }
-      } else {
-        const now = new Date();
-        const inserted = data.inserted ?? 0;
-        if (data.status === "queued") {
-          const authFilesWarning = typeof data.authFilesWarning === "string" ? data.authFilesWarning : "";
-          const queuedMessage = authFilesWarning
-            ? `采集任务已提交，等待 Collector 处理；认证映射同步异常：${authFilesWarning}`
-            : "采集任务已提交，等待 Collector 处理";
-          setSyncStatus(queuedMessage);
-          if (typeof window !== "undefined") {
-            window.localStorage.setItem("lastSyncStatus", queuedMessage);
-          }
-          return;
-        }
-        setLastSyncTime(now);
-        if (typeof window !== "undefined") {
-          window.localStorage.setItem("lastSyncTime", now.toISOString());
-        }
-        setLastInsertedDelta((prev) => {
-          const safePrev = Number.isFinite(prev) ? prev : 0;
-          const next = inserted > 0 ? inserted : safePrev;
-          if ((inserted > 0 || !Number.isFinite(prev)) && typeof window !== "undefined") {
-            window.localStorage.setItem("lastInsertedDelta", String(next));
-          }
-          return next;
-        });
-        // 手动同步时总是显示消息，自动同步时仅在有数据时显示
-        const shouldShowMessage = showMessage || inserted > 0;
-        if (shouldShowMessage) {
-          const successMsg = `已同步 ${inserted} 条记录`;
-          setSyncStatus(successMsg);
-          if (typeof window !== "undefined") {
-            window.localStorage.setItem("lastSyncStatus", successMsg);
-          }
-        }
-          if (triggerRefresh && inserted > 0) {
-            skipOverviewCacheRef.current = true;
-            setRefreshTrigger((prev) => prev + 1);
-          }
-      }
-    } catch (err) {
-      // 判断是否为超时错误
-      const isTimeout = (err as Error).name === "AbortError";
-      const errorMsg = isTimeout 
-        ? "同步超时：数据同步可能需要更长时间，建议稍后手动刷新" 
-        : `同步失败: ${(err as Error).message}`;
-      setSyncStatus(errorMsg);
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("lastSyncStatus", errorMsg);
-      }
-    } finally {
-      syncingRef.current = false;
-      setSyncing(false);
+  // 刷新只重新读取 PostgreSQL；CPA 采集由后台 Collector 独立持续执行
+  const refreshOverview = useCallback((source: "manual" | "auto" = "manual") => {
+    refreshRequestRef.current = { source, id: ++refreshRequestSequenceRef.current };
+    if (refreshStatusTimerRef.current !== null) {
+      window.clearTimeout(refreshStatusTimerRef.current);
+      refreshStatusTimerRef.current = null;
     }
+    setRefreshStatus(null);
+    setRefreshStatusClosing(false);
+    skipOverviewCacheRef.current = true;
+    setRefreshTrigger((prev) => prev + 1);
   }, []);
 
   // 加载价格配置
@@ -636,88 +535,11 @@ export default function DashboardPage() {
     loadPrices();
   }, [loadPrices]);
 
-  // 同步模型价格
-  const syncModelPrices = useCallback(async () => {
-    if (syncingPrices) return;
 
-    setSyncingPrices(true);
-    // setPricesSyncStatus({ type: 'syncing' }); // 已禁用 toast 通知
-    setPricesSyncData(null);
-    setPricesSyncModalOpen(true);
-
-    try {
-      const res = await fetch("/api/sync-model-prices", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({})
-      });
-
-      const data = await res.json();
-      setPricesSyncData(data);
-      
-      if (!res.ok) {
-        // setPricesSyncStatus({ 
-        //   type: 'error', 
-        //   message: `价格同步失败: ${data.error || res.statusText}` 
-        // }); // 已禁用 toast 通知
-      } else {
-        const { summary } = data;
-        // setPricesSyncStatus({ 
-        //   type: 'success', 
-        //   message: `已更新 ${summary.updated} 个模型价格，跳过 ${summary.skipped} 个，失败 ${summary.failed} 个`,
-        //   summary: summary
-        // }); // 已禁用 toast 通知
-        // 同步成功后重新加载价格列表
-        await loadPrices();
-
-        // 若价格存在变更，自动刷新一次面板以应用最新价格（并跳过 overview 缓存）
-        if (summary && Number(summary.updated) > 0) {
-          skipOverviewCacheRef.current = true;
-          setRefreshTrigger((prev) => prev + 1);
-        }
-      }
-    } catch (err) {
-      const errorMsg = (err as Error).message;
-      // setPricesSyncStatus({ 
-      //   type: 'error', 
-      //   message: `价格同步失败: ${errorMsg}` 
-      // }); // 已禁用 toast 通知
-      setPricesSyncData({ error: errorMsg });
-    } finally {
-      setSyncingPrices(false);
-    }
-  }, [syncingPrices, loadPrices]);
-
-  // 页面加载时仅在当前会话首次进入时自动同步一次
+  // 首屏直接读取 PostgreSQL 中已持久化的数据，不主动提交采集任务
   useEffect(() => {
-    let active = true;
-    const autoSyncKey = "cli_dashboard_auto_sync_done";
-    const hasSyncedThisSession = typeof window !== "undefined" ? window.sessionStorage.getItem(autoSyncKey) : null;
-
-    if (hasSyncedThisSession) {
-      setReady(true);
-      return () => {
-        active = false;
-      };
-    }
-
-    const run = async () => {
-      try {
-        await doSync(true, true, 5000); // 首屏加载使用 5 秒超时
-        if (typeof window !== "undefined") {
-          window.sessionStorage.setItem(autoSyncKey, "1");
-        }
-      } finally {
-        if (active) setReady(true);
-      }
-    };
-
-    run();
-
-    return () => {
-      active = false;
-    };
-  }, [doSync]);
+    setReady(true);
+  }, []);
 
   useEffect(() => {
     const saved = typeof window !== "undefined" ? window.localStorage.getItem("theme") : null;
@@ -758,7 +580,7 @@ export default function DashboardPage() {
     worker.onmessage = (e: MessageEvent) => {
       if (e.data.type === "tick") {
         tickBaseTimeRef.current = Date.now();
-        doSync(true);
+        refreshOverview("auto");
       }
     };
     return () => {
@@ -766,8 +588,7 @@ export default function DashboardPage() {
       worker.terminate();
       autoRefreshWorkerRef.current = null;
     };
-  }, [doSync]);
-
+  }, [refreshOverview]);
   // 根据 autoRefresh 开关和间隔设置向 Worker 发送 start/stop
   useEffect(() => {
     const worker = autoRefreshWorkerRef.current;
@@ -801,6 +622,8 @@ export default function DashboardPage() {
     if (!ready) return;
     if (rangeMode === "custom" && (!customStart || !customEnd)) return;
 
+    const refreshRequest = refreshRequestRef.current;
+
     const controller = new AbortController();
     let active = true;
 
@@ -808,7 +631,9 @@ export default function DashboardPage() {
       setLoadingOverview(true);
       try {
         const params = new URLSearchParams();
-        if (rangeMode === "custom") {
+        if (rangeMode === "all") {
+          params.set("all", "1");
+        } else if (rangeMode === "custom") {
           params.set("start", customStart);
           params.set("end", customEnd);
         } else {
@@ -828,7 +653,22 @@ export default function DashboardPage() {
           params.set("skipCache", "1");
           skipOverviewCacheRef.current = false;
         }
+        if (refreshRequest) params.set("refreshSource", refreshRequest.source);
 
+        const filterParams = new URLSearchParams(params);
+        filterParams.delete("page");
+        filterParams.delete("pageSize");
+        filterParams.delete("skipCache");
+        filterParams.delete("refreshSource");
+        const filterKey = filterParams.toString();
+        if (!refreshRequest && lastOverviewCountRef.current?.filterKey !== filterKey) {
+          if (refreshStatusTimerRef.current !== null) {
+            window.clearTimeout(refreshStatusTimerRef.current);
+            refreshStatusTimerRef.current = null;
+          }
+          setRefreshStatus(null);
+          setRefreshStatusClosing(false);
+        }
         const res = await fetch(`/api/overview?${params.toString()}`, { cache: "no-store", signal: controller.signal });
 
         if (!res.ok) {
@@ -842,13 +682,27 @@ export default function DashboardPage() {
             }
             setOverviewError("无法加载实时用量：" + errMsg);
             setOverview(null);
+            if (refreshRequest && refreshRequestRef.current?.id === refreshRequest.id) refreshRequestRef.current = null;
           }
           return;
         }
         const data: OverviewAPIResponse = await res.json();
         if (!active) return;
+        const totalRequests = Number(data.overview?.totalRequests ?? 0);
+        const previousSnapshot = lastOverviewCountRef.current;
+        if (refreshRequest) {
+          const delta = previousSnapshot?.filterKey === filterKey ? totalRequests - previousSnapshot.totalRequests : null;
+          const message = delta === null
+            ? `当前共 ${formatNumberWithCommas(totalRequests)} 条请求`
+            : delta > 0
+              ? `新增 ${formatNumberWithCommas(delta)} 条请求`
+              : "暂无新增数据";
+          setRefreshStatus(message);
+          setRefreshStatusClosing(false);
+          if (refreshRequestRef.current?.id === refreshRequest.id) refreshRequestRef.current = null;
+        }
+        lastOverviewCountRef.current = { filterKey, totalRequests };
         setOverview(data.overview ?? null);
-        setPricingCoverage(data.pricingCoverage);
         setCostByCurrency(data.costByCurrency ?? []);
         setBucketTimezone(data.timezone);
         setOverviewEmpty(Boolean(data.empty));
@@ -861,7 +715,7 @@ export default function DashboardPage() {
         if (data.lastSyncAt) {
           const dbTime = new Date(data.lastSyncAt);
           if (Number.isFinite(dbTime.getTime())) {
-            setLastSyncTime((prev) => (!prev || dbTime > prev ? dbTime : prev));
+            setLastSyncTime(dbTime);
           }
         }
       } catch (err) {
@@ -870,6 +724,7 @@ export default function DashboardPage() {
         if ((error as any)?.name === "AbortError") return;
         setOverviewError("无法加载实时用量：" + (error.message || "未知错误"));
         setOverview(null);
+        if (refreshRequest && refreshRequestRef.current?.id === refreshRequest.id) refreshRequestRef.current = null;
       } finally {
         if (active) setLoadingOverview(false);
       }
@@ -880,7 +735,6 @@ export default function DashboardPage() {
       controller.abort();
     };
   }, [rangeMode, customStart, customEnd, rangeDays, filterModel, filterRoute, filterName, providerFilter, serviceTierFilter, statusFilter, currencyFilter, page, refreshTrigger, ready]);
-
   const overviewData = overview;
   const showEmpty = overviewEmpty || !overview;
   
@@ -913,7 +767,7 @@ export default function DashboardPage() {
   }, [fullscreenChart]);
 
   const hourRangeOptions: { key: "all" | "24h" | "72h"; label: string }[] = [
-    { key: "all", label: "全部" },
+    { key: "all", label: rangeMode === "all" ? "最近 367 天" : "全部" },
     { key: "24h", label: "最近 24 小时" },
     { key: "72h", label: "最近 72 小时" }
   ];
@@ -968,6 +822,14 @@ export default function DashboardPage() {
 
   // 计算实际数据时长（从最早记录到现在）
   const actualTimeSpan = useMemo(() => {
+    if (rangeMode === "all" && overviewData?.byDay?.length) {
+      const earliestDay = new Date(overviewData.byDay[0].label + "T00:00:00Z");
+      if (Number.isFinite(earliestDay.getTime())) {
+        const diffMinutes = Math.max(1, Math.floor((Date.now() - earliestDay.getTime()) / (1000 * 60)));
+        return { days: Math.max(1, diffMinutes / (24 * 60)), minutes: diffMinutes };
+      }
+    }
+
     if (!overviewData?.byHour || overviewData.byHour.length === 0) {
       return { days: appliedDays, minutes: appliedDays * 24 * 60 };
     }
@@ -996,15 +858,14 @@ export default function DashboardPage() {
     const diffDays = Math.max(1, diffMinutes / (24 * 60));
     
     return { days: diffDays, minutes: diffMinutes };
-  }, [overviewData?.byHour, appliedDays]);
-
+  }, [rangeMode, overviewData?.byDay, overviewData?.byHour, appliedDays]);
   const rangeSubtitle = useMemo(() => {
+    if (rangeMode === "all") return "全部历史记录";
     if (rangeMode === "custom" && customStart && customEnd) {
-      return `${customStart} ~ ${customEnd}（共 ${appliedDays} 天）`;
+      return customStart + " ~ " + customEnd + "（共 " + appliedDays + " 天）";
     }
-    return `最近 ${appliedDays} 天`;
+    return "最近 " + appliedDays + " 天";
   }, [rangeMode, customStart, customEnd, appliedDays]);
-
 
   const applyFilters = () => {
     setPage(1);
@@ -1179,13 +1040,6 @@ export default function DashboardPage() {
 
   return (
     <main className={`min-h-screen px-6 py-8 transition-colors ${darkMode ? "bg-slate-900 text-slate-100" : "bg-slate-50 text-slate-900"}`}>
-      {pricingCoverage ? (
-        <section className={`mb-5 flex flex-wrap items-center gap-4 rounded-xl border px-4 py-3 text-sm ${darkMode ? "border-slate-700 bg-slate-800/70" : "border-slate-200 bg-white"}`}>
-          <div><span className="text-xs text-slate-500">价格覆盖率</span><div className="text-lg font-semibold">{(pricingCoverage.rate * 100).toFixed(2)}%</div></div>
-          <div><span className="text-xs text-slate-500">已定价 / 未定价 / 部分</span><div className="font-medium">{pricingCoverage.priced} / {pricingCoverage.unpriced} / {pricingCoverage.partial}</div></div>
-          <div className="min-w-0 flex-1"><span className="text-xs text-slate-500">按币种累计成本（不跨币种相加）</span><div className="flex flex-wrap gap-3 font-medium">{(costByCurrency ?? []).map((item) => <span key={item.currency}>{item.currency} {item.costNanos === null ? "未定价" : (item.costNanos / 1e9).toFixed(6)}</span>)}</div></div>
-        </section>
-      ) : null}
       {overviewError ? (
         <div className="mb-6 flex items-start gap-3 rounded-xl border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm text-red-400">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
@@ -1231,7 +1085,11 @@ export default function DashboardPage() {
           }`}>
             <button
               type="button"
-              onClick={() => setAutoRefresh((v) => !v)}
+              onClick={() => {
+                const next = !autoRefresh;
+                setAutoRefresh(next);
+                if (next) refreshOverview("auto");
+              }}
               onMouseEnter={() => {
                 if (!autoRefresh) return;
                 const update = () => {
@@ -1276,6 +1134,7 @@ export default function DashboardPage() {
               }`}>
                 <select
                   value={refreshPreset}
+                  data-testid="auto-refresh-interval"
                   onChange={(e) => setRefreshPreset(e.target.value)}
                   className={`appearance-none py-1.5 pl-2 text-xs outline-none cursor-pointer ${
                     refreshPreset === "custom" ? "pr-4" : "pr-6"
@@ -1308,6 +1167,7 @@ export default function DashboardPage() {
                 <input
                   type="number"
                   min={customIntervalUnit === "m" ? "1" : "5"}
+                  data-testid="auto-refresh-custom-interval"
                   value={customIntervalInput}
                   onChange={(e) => setCustomIntervalInput(e.target.value)}
                   className={`w-14 py-1.5 pl-2 pr-1 text-xs outline-none flex-shrink-0 appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${
@@ -1340,18 +1200,18 @@ export default function DashboardPage() {
           </div>
           </div>
           <button
-            onClick={() => doSync(true)}
-            disabled={syncing}
+            onClick={() => refreshOverview("manual")}
+            disabled={loadingOverview}
             className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm font-medium transition ${
-              syncing
+              loadingOverview
                 ? darkMode
                   ? "cursor-not-allowed border-slate-700 bg-slate-800 text-slate-500"
                   : "cursor-not-allowed border-slate-300 bg-slate-200 text-slate-500"
                 : "border-indigo-500/50 bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30"
             }`}
           >
-            <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} />
-            {syncing ? "同步中..." : "刷新数据"}
+            <RefreshCw className={`h-4 w-4 ${loadingOverview ? "animate-spin" : ""}`} />
+            {loadingOverview ? "刷新中..." : "刷新数据"}
           </button>
           <div className="flex flex-col items-end gap-0.5">
             <div className={`flex items-center gap-2 text-sm ${darkMode ? "text-slate-400" : "text-slate-600"}`}>
@@ -1360,15 +1220,32 @@ export default function DashboardPage() {
             </div>
             {mounted && lastSyncTime && (
               <span className={`text-xs ${darkMode ? "text-slate-500" : "text-slate-500"}`}>
-                上次同步: {lastSyncTime.toLocaleTimeString()}
+                最近入库: {lastSyncTime.toLocaleTimeString()}
               </span>
             )}
+
           </div>
         </div>
       </header>
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <span className="text-sm uppercase tracking-wide text-slate-500">时间范围</span>
+        <button
+          type="button"
+          aria-label="时间范围：全部"
+          onClick={() => {
+            setRangeMode("all");
+            setPage(1);
+            setCustomPickerOpen(false);
+          }}
+          className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition ${
+            rangeMode === "all"
+              ? "border-indigo-500 bg-indigo-600 text-white"
+              : darkMode ? "border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-500" : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
+          }`}
+        >
+          全部
+        </button>
         {[7, 14, 30].map((days) => (
           <button
             key={days}
@@ -1592,11 +1469,6 @@ export default function DashboardPage() {
               <div className={`text-sm uppercase tracking-wide ${darkMode ? "text-slate-400" : "text-slate-500"}`}>请求数</div>
               <div className={`mt-3 text-2xl font-semibold ${darkMode ? "text-white" : "text-slate-900"}`}>
                 {formatNumberWithCommas(overviewData.totalRequests)}
-                {lastInsertedDelta > 0 ? (
-                  <span className={`ml-2 text-sm font-normal ${darkMode ? "text-slate-400" : "text-slate-500"}`}>
-                    (+{formatCompactNumber(lastInsertedDelta)})
-                  </span>
-                ) : null}
               </div>
               <p className="mt-2 text-sm">
                 <span
@@ -1728,7 +1600,7 @@ export default function DashboardPage() {
               {showEmpty ? (
                 <div className="flex h-full flex-col items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-800/30 text-center">
                   <p className="text-base text-slate-400">暂无图表数据</p>
-                  <p className="mt-1 text-sm text-slate-500">请先触发 /api/sync 同步数据</p>
+                  <p className="mt-1 text-sm text-slate-500">暂无已入库记录；收到 CPA 请求并由 Collector 写入后会自动显示</p>
                 </div>
               ) : (
               <ResponsiveContainer width="100%" height="100%">
@@ -2048,7 +1920,7 @@ export default function DashboardPage() {
               {showEmpty ? (
                 <div className="flex h-full flex-col items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-800/30 text-center">
                   <p className="text-base text-slate-400">暂无小时数据</p>
-                  <p className="mt-1 text-sm text-slate-500">请先触发 /api/sync 同步数据</p>
+                  <p className="mt-1 text-sm text-slate-500">暂无小时数据；收到 CPA 请求并由 Collector 写入后会自动显示</p>
                 </div>
               ) : (
               <ResponsiveContainer width="100%" height="100%">
@@ -2221,166 +2093,6 @@ export default function DashboardPage() {
         )}
       </section>
 
-      {loadingOverview || !overviewData ? (
-        <div className="mt-8">
-          <Skeleton className="h-[500px] rounded-2xl" />
-        </div>
-      ) : (
-        <section className={`animate-card-float mt-8 rounded-2xl p-6 shadow-sm ring-1 ${darkMode ? "bg-slate-800/50 ring-slate-700" : "bg-white ring-slate-200"}`} style={{ animationDelay: '0.35s' }}>
-          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h2 className={`text-lg font-semibold ${darkMode ? "text-white" : "text-slate-900"}`}>模型价格配置</h2>
-              <p className={`text-xs ${darkMode ? "text-slate-400" : "text-slate-500"}`}>设置每百万 tokens 单价，费用计算将立即更新</p>
-            </div>
-            <div className="flex w-full flex-col gap-4 md:w-3/5 md:flex-row md:items-center md:justify-end">
-              <div className="relative w-full md:max-w-[360px]">
-                <Search className={`absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 ${darkMode ? "text-slate-500" : "text-slate-400"}`} />
-                <input
-                  type="text"
-                  placeholder="搜索已配置价格的模型..."
-                  value={priceSearchQuery}
-                  onChange={(e) => setPriceSearchQuery(e.target.value)}
-                  className={`w-full rounded-lg border py-2 pl-10 pr-3 text-sm focus:border-indigo-500 focus:outline-none ${darkMode ? "border-slate-700 bg-slate-900 text-white placeholder-slate-500" : "border-slate-300 bg-white text-slate-900 placeholder-slate-400"}`}
-                  aria-label="搜索模型价格"
-                />
-                {priceSearchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setPriceSearchQuery("")}
-                    className={`absolute right-3 top-1/2 -translate-y-1/2 ${darkMode ? "text-slate-500 hover:text-slate-300" : "text-slate-400 hover:text-slate-600"}`}
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                )}
-              </div>
-              <button
-                onClick={syncModelPrices}
-                disabled={syncingPrices}
-                className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition ${
-                  syncingPrices
-                    ? darkMode
-                      ? "cursor-not-allowed border-slate-700 bg-slate-800 text-slate-500"
-                      : "cursor-not-allowed border-slate-300 bg-slate-200 text-slate-500"
-                    : "border-emerald-500/50 bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30"
-                }`}
-                title="从 models.dev 获取最新模型价格并更新到面板"
-              >
-                <DollarSign className={`h-4 w-4 ${syncingPrices ? "animate-pulse" : ""}`} />
-                {syncingPrices ? "同步中..." : "更新价格"}
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-6 grid gap-6 lg:grid-cols-5">
-          <form onSubmit={handleSubmit} className={`rounded-xl border p-5 lg:col-span-2 ${darkMode ? "border-slate-700 bg-slate-800/50" : "border-slate-200 bg-slate-50"}`}>
-            <div className="grid gap-6">
-              <label className={`text-sm font-medium ${darkMode ? "text-slate-300" : "text-slate-700"}`}>
-                模型名称
-                <ComboBox
-                  value={form.model}
-                  onChange={(val) => setForm((f) => ({ ...f, model: val }))}
-                  options={priceModelOptions}
-                  placeholder="gpt-4o（支持通配符如 gemini-2*）"
-                  darkMode={darkMode}
-                  className="mt-1 w-full"
-                />
-              </label>
-              <label className={`text-sm font-medium ${darkMode ? "text-slate-300" : "text-slate-700"}`}>
-                输入（$ / M tokens）
-                <input
-                  type="number"
-                  step="0.01"
-                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none ${darkMode ? "border-slate-700 bg-slate-900 text-white placeholder-slate-500" : "border-slate-300 bg-white text-slate-900 placeholder-slate-400"}`}
-                  placeholder="2.5"
-                  value={form.inputPricePer1M}
-                  onChange={(e) => setForm((f) => ({ ...f, inputPricePer1M: e.target.value }))}
-                />
-              </label>
-              <label className={`text-sm font-medium ${darkMode ? "text-slate-300" : "text-slate-700"}`}>
-                缓存输入（$ / M tokens）
-                <input
-                  type="number"
-                  step="0.01"
-                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none ${darkMode ? "border-slate-700 bg-slate-900 text-white placeholder-slate-500" : "border-slate-300 bg-white text-slate-900 placeholder-slate-400"}`}
-                  placeholder="0.5（可选，默认为 0）"
-                  value={form.cachedInputPricePer1M}
-                  onChange={(e) => setForm((f) => ({ ...f, cachedInputPricePer1M: e.target.value }))}
-                />
-              </label>
-              <label className={`text-sm font-medium ${darkMode ? "text-slate-300" : "text-slate-700"}`}>
-                输出（$ / M tokens）
-                <input
-                  type="number"
-                  step="0.01"
-                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none ${darkMode ? "border-slate-700 bg-slate-900 text-white placeholder-slate-500" : "border-slate-300 bg-white text-slate-900 placeholder-slate-400"}`}
-                  placeholder="10"
-                  value={form.outputPricePer1M}
-                  onChange={(e) => setForm((f) => ({ ...f, outputPricePer1M: e.target.value }))}
-                />
-              </label>
-              <button
-                type="submit"
-                disabled={saving}
-                className="inline-flex items-center justify-center rounded-lg bg-indigo-500 px-3 py-2 text-sm font-semibold text-white transition hover:bg-indigo-600 disabled:opacity-60"
-              >
-                <Save className="mr-2 h-4 w-4" />
-                {saving ? "保存中..." : "保存价格"}
-              </button>
-            </div>
-          </form>
-
-          <div className="lg:col-span-3">
-            <div className="scrollbar-slim grid max-h-[420px] gap-3 overflow-y-auto pr-1">
-              {filteredPrices.length ? filteredPrices.map((price) => (
-                <div key={price.model} className={`flex items-center justify-between rounded-xl border px-4 pt-3 pb-2.5 ${darkMode ? "border-slate-700 bg-slate-800/50" : "border-slate-200 bg-slate-50"}`}>
-                  <div>
-                    <p className={`text-base font-semibold ${darkMode ? "text-white" : "text-slate-900"}`}>{price.model}</p>
-                    <div className="mt-1.5 grid grid-cols-3 gap-2 text-sm leading-5">
-                      <span className={`inline-flex items-center justify-between rounded-full px-2 py-0 ${darkMode ? "bg-rose-500/15 text-rose-200" : "bg-rose-100 text-rose-700"}`} style={{ width: `${badgeWidths.input}px` }}>
-                        <span className="font-medium">输入</span>
-                        <span className="font-semibold tabular-nums">${price.inputPricePer1M}/M</span>
-                      </span>
-                      <span className={`inline-flex items-center justify-between rounded-full px-2 py-0 ${darkMode ? "bg-amber-500/15 text-amber-200" : "bg-amber-100 text-amber-700"}`} style={{ width: `${badgeWidths.cached}px` }}>
-                        <span className="font-medium">缓存</span>
-                        <span className="font-semibold tabular-nums">${price.cachedInputPricePer1M}/M</span>
-                      </span>
-                      <span className={`inline-flex items-center justify-between rounded-full px-2 py-0 ${darkMode ? "bg-emerald-500/15 text-emerald-200" : "bg-emerald-100 text-emerald-700"}`} style={{ width: `${badgeWidths.output}px` }}>
-                        <span className="font-medium">输出</span>
-                        <span className="font-semibold tabular-nums">${price.outputPricePer1M}/M</span>
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => openEditModal(price)}
-                      className={`rounded-lg p-2 transition ${darkMode ? "text-slate-400 hover:bg-slate-700 hover:text-white" : "text-slate-500 hover:bg-slate-200 hover:text-slate-900"}`}
-                      title="编辑"
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPendingDelete(price.model)}
-                      className={`rounded-lg p-2 transition ${darkMode ? "text-red-400 hover:bg-red-900/50 hover:text-red-300" : "text-red-500 hover:bg-red-100 hover:text-red-700"}`}
-                      title="删除"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-              )) : (
-                <div className={`flex flex-col items-center justify-center rounded-xl border border-dashed py-8 text-center ${darkMode ? "border-slate-700 bg-slate-800/30" : "border-slate-300 bg-slate-50"}`}>
-                  <p className="text-base text-slate-400">
-                    {priceSearchQuery ? "未找到匹配的模型" : "暂无已配置价格"}
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-        </section>
-      )}
 
       {/* 编辑价格模态框 */}
       <Modal
@@ -2930,30 +2642,6 @@ export default function DashboardPage() {
         </div>
       </Modal>
 
-      {/* Toast 通知 - 右上角显示 */}
-      {syncStatus && (
-        <div
-          onClick={() => closeSyncStatus()}
-          className={`fixed right-6 top-24 z-50 max-w-[290px] cursor-pointer rounded-lg border px-4 py-3 shadow-lg transition-opacity hover:opacity-90 ${
-            syncStatusClosing ? "animate-toast-out" : "animate-toast-in"
-          } ${
-            syncStatus.includes("失败") || syncStatus.includes("超时")
-              ? darkMode
-                ? "border-rose-500/30 bg-rose-950/60 text-rose-200"
-                : "border-rose-300 bg-rose-50 text-rose-800"
-              : darkMode
-              ? "border-green-500/40 bg-green-900/80 text-green-100"
-              : "border-green-400 bg-green-50 text-green-900"
-          }`}
-        >
-          <div className="flex items-center gap-2.5">
-            <span className="text-xl animate-emoji-pop">
-              {syncStatus.includes("失败") || syncStatus.includes("超时") ? "❌" : "✅"}
-            </span>
-            <span className="text-sm font-medium">{syncStatus}</span>
-          </div>
-        </div>
-      )}
 
       {saveStatus && (
         <div
@@ -2969,6 +2657,27 @@ export default function DashboardPage() {
           <div className="flex items-center gap-2.5">
             <span className="text-xl animate-emoji-pop">✅</span>
             <span className="text-sm font-medium">{saveStatus}</span>
+          </div>
+        </div>
+      )}
+
+      {refreshStatus && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="dashboard-refresh-status"
+          onClick={() => closeRefreshStatus()}
+          className={`fixed right-6 top-26 z-50 max-w-[320px] cursor-pointer rounded-lg border px-4 py-3 shadow-lg transition-opacity hover:opacity-90 ${
+            refreshStatusClosing ? "animate-toast-out" : "animate-toast-in"
+          } ${
+            darkMode
+              ? "border-green-500/40 bg-green-900/80 text-green-100"
+              : "border-green-400 bg-green-50 text-green-900"
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="text-xl animate-emoji-pop">{refreshStatus.includes("暂无新增数据") ? "ℹ️" : "✅"}</span>
+            <span className="text-sm font-medium">{refreshStatus}</span>
           </div>
         </div>
       )}
@@ -3002,125 +2711,6 @@ export default function DashboardPage() {
       )}
       */}
 
-      {/* 模型价格同步详情弹窗 */}
-      <Modal
-        isOpen={pricesSyncModalOpen}
-        onClose={() => setPricesSyncModalOpen(false)}
-        title="模型价格同步详情"
-        darkMode={darkMode}
-        className="max-w-3xl"
-      >
-        <div className="max-h-[70vh] overflow-auto">
-          {syncingPrices && (
-            <div className="flex items-center justify-center py-12">
-              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-emerald-500"></div>
-              <span className={`ml-4 text-base ${darkMode ? "text-slate-300" : "text-slate-600"}`}>正在同步价格...</span>
-            </div>
-          )}
-          
-          {pricesSyncData && !syncingPrices && (
-            <>
-              {/* 错误信息优先显示 */}
-              {pricesSyncData.error && (
-                <div className={`rounded-xl p-6 border-2 ${darkMode ? "bg-red-950/30 border-red-500/40" : "bg-red-50 border-red-300"}`}>
-                  <div className="flex items-start gap-3">
-                    <div className={`flex-shrink-0 p-2 rounded-lg ${darkMode ? "bg-red-900/40" : "bg-red-200"}`}>
-                      <AlertTriangle className={`h-6 w-6 ${darkMode ? "text-red-400" : "text-red-600"}`} />
-                    </div>
-                    <div className="flex-1">
-                      <h3 className={`text-lg font-semibold mb-2 ${darkMode ? "text-red-300" : "text-red-900"}`}>
-                        同步失败
-                      </h3>
-                      <p className={`text-sm leading-relaxed ${darkMode ? "text-red-200/90" : "text-red-800"}`}>
-                        {pricesSyncData.error}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* 摘要 */}
-              {pricesSyncData.summary && !pricesSyncData.error && (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                    <div className={`rounded-xl border p-4 ${darkMode ? "bg-slate-800/50 border-slate-700" : "bg-slate-50 border-slate-200"}`}>
-                      <p className={`text-xs mb-1 ${darkMode ? "text-slate-400" : "text-slate-500"}`}>总计</p>
-                      <p className={`text-2xl font-bold ${darkMode ? "text-white" : "text-slate-900"}`}>{pricesSyncData.summary.total}</p>
-                    </div>
-                    <div className="rounded-xl border p-4 bg-emerald-500/10 border-emerald-500/30">
-                      <p className="text-xs mb-1 text-emerald-400">已更新</p>
-                      <p className="text-2xl font-bold text-emerald-400">{pricesSyncData.summary.updated}</p>
-                    </div>
-                    <div className="rounded-xl border p-4 bg-yellow-500/10 border-yellow-500/30">
-                      <p className="text-xs mb-1 text-yellow-400">跳过</p>
-                      <p className="text-2xl font-bold text-yellow-400">{pricesSyncData.summary.skipped}</p>
-                    </div>
-                    <div className="rounded-xl border p-4 bg-red-500/10 border-red-500/30">
-                      <p className="text-xs mb-1 text-red-400">失败</p>
-                      <p className="text-2xl font-bold text-red-400">{pricesSyncData.summary.failed}</p>
-                    </div>
-                  </div>
-
-                  {/* 详细结果 */}
-                  {pricesSyncData.details && pricesSyncData.details.length > 0 && (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className={`border-b ${darkMode ? "border-slate-700" : "border-slate-300"}`}>
-                        <th className="py-2 px-2 text-left">模型</th>
-                        <th className="py-2 px-2 text-left">状态</th>
-                        <th className="py-2 px-2 text-left">匹配上游</th>
-                        <th className="py-2 px-2 text-left">详情</th>
-                        <th className="py-2 px-2 text-center w-12"> </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pricesSyncData.details.map((d, i) => (
-                        <tr key={i} className={`border-b ${darkMode ? "border-slate-700/50" : "border-slate-200"}`}>
-                          <td className="py-1.5 px-2 font-mono">{d.model}</td>
-                          <td className="py-1.5 px-2">
-                            <span className={`inline-flex items-center justify-center w-6 h-4.5 rounded text-xs ${
-                              d.status === "updated" ? "bg-emerald-500/20 text-emerald-400" :
-                              d.status === "skipped" ? "bg-yellow-500/20 text-yellow-400" :
-                              "bg-red-500/20 text-red-400"
-                            }`}>
-                              {d.status === "updated" ? "✓" : d.status === "skipped" ? "⊘" : "✗"}
-                            </span>
-                          </td>
-                          <td className="py-1.5 px-2 font-mono text-emerald-400">{d.matchedWith || "-"}</td>
-                          <td className="py-1.5 px-2 text-slate-500 max-w-xs" title={d.reason}>
-                            <div className="truncate">{d.reason || "-"}</div>
-                          </td>
-                          <td className="py-1.5 px-2 text-center">
-                            {d.selectionDebug ? (
-                              <button
-                                type="button"
-                                title={d.selectionDebug}
-                                aria-label="查看详细说明"
-                                className={`inline-flex h-5 w-5 cursor-help items-center justify-center rounded-full border text-[11px] font-semibold transition ${
-                                  darkMode
-                                    ? "border-slate-600 text-slate-300 hover:border-slate-400 hover:bg-slate-700"
-                                    : "border-slate-300 text-slate-600 hover:border-slate-400 hover:bg-slate-100"
-                                }`}
-                              >
-                                ?
-                              </button>
-                            ) : (
-                              <span className={`text-xs ${darkMode ? "text-slate-600" : "text-slate-400"}`}>-</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </Modal>
     </main>
   );
 }

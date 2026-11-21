@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 import Sidebar from "./Sidebar";
+import { AutoRefreshProvider } from "./AutoRefreshContext";
 
 export default function ClientLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -24,9 +25,11 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
   }
 
   return (
-    <>
-      <Sidebar />
-      <div className="ml-56 min-h-screen">{children}</div>
-    </>
+    <AutoRefreshProvider>
+      <>
+        <Sidebar />
+        <div className="ml-56 min-h-screen">{children}</div>
+      </>
+    </AutoRefreshProvider>
   );
 }

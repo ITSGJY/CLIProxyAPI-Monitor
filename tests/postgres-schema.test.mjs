@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
@@ -23,6 +24,53 @@ import {
 import { refreshUsageRollups } from "../lib/collector/rollups.mjs";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
+
+test("PostgreSQL migration preflight ignores model_prices in an unrelated schema", {
+  skip: !testDatabaseUrl
+}, async () => {
+  const parsedUrl = new URL(testDatabaseUrl);
+  const databaseName = decodeURIComponent(parsedUrl.pathname.replace(/^\//, ""));
+  assert.ok(["127.0.0.1", "localhost"].includes(parsedUrl.hostname), "TEST_DATABASE_URL must use loopback");
+  assert.ok(databaseName.toLowerCase().includes("test"), "TEST_DATABASE_URL database name must include test");
+
+  const { Pool } = await import("pg");
+  const adminPool = new Pool({ connectionString: testDatabaseUrl, max: 1 });
+  const targetDatabase = "phase8_migration_preflight_test_" + randomUUID().replaceAll("-", "");
+  const targetUrl = new URL(testDatabaseUrl);
+  targetUrl.pathname = "/" + targetDatabase;
+  let targetPool;
+
+  try {
+    await adminPool.query(`CREATE DATABASE "${targetDatabase}"`);
+    targetPool = new Pool({ connectionString: targetUrl.toString(), max: 1 });
+    await targetPool.query("CREATE SCHEMA unrelated_probe");
+    await targetPool.query("CREATE TABLE unrelated_probe.model_prices (id integer PRIMARY KEY)");
+    await targetPool.end();
+    targetPool = undefined;
+
+    const migrationOutput = execFileSync(process.execPath, ["scripts/migrate.mjs"], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: targetUrl.toString(), DATABASE_DRIVER: "pg" }
+    });
+    assert.match(migrationOutput, /迁移完成/);
+
+    targetPool = new Pool({ connectionString: targetUrl.toString(), max: 1 });
+    const verification = await targetPool.query(
+      `SELECT
+         (SELECT count(*)::int FROM drizzle.__drizzle_migrations) AS migration_count,
+         to_regclass('public.usage_events') IS NOT NULL AS usage_events_created,
+         to_regclass('unrelated_probe.model_prices') IS NOT NULL AS unrelated_table_preserved`
+    );
+    assert.equal(verification.rows[0].migration_count, 12);
+    assert.equal(verification.rows[0].usage_events_created, true);
+    assert.equal(verification.rows[0].unrelated_table_preserved, true);
+  } finally {
+    if (targetPool) await targetPool.end();
+    await adminPool.query(`DROP DATABASE IF EXISTS "${targetDatabase}" WITH (FORCE)`);
+    await adminPool.end();
+  }
+});
+
 
 test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplication and rollups", {
   skip: !testDatabaseUrl
@@ -56,18 +104,24 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
         "0005_usage_pipeline.sql",
         "0006_phase5_dashboard_rollup_dimensions.sql",
         "0007_phase6_legacy_import.sql",
-        "0008_resp_subscription.sql"
+        "0008_resp_subscription.sql",
+        "0009_request_event_context.sql",
+        "0010_pricing_center.sql", "0011_cpa_error_events.sql"
       ];
       for (const migration of migrations) {
         const sql = await readFile(new URL("../drizzle/" + migration, import.meta.url), "utf8");
         await client.query(sql);
       }
 
+      const targetSchemaModelPrices = await client.query("SELECT to_regclass('model_prices') IS NOT NULL AS exists");
+      const unrelatedSchemaModelPrices = await adminPool.query("SELECT to_regclass('model_prices') IS NOT NULL AS exists");
+      assert.equal(targetSchemaModelPrices.rows[0].exists, true, "legacy detection should see model_prices in the target search_path");
+      assert.equal(unrelatedSchemaModelPrices.rows[0].exists, false, "legacy detection must ignore model_prices in an unrelated schema");
+
       const relation = await client.query(
         "SELECT c.relkind FROM pg_class c WHERE c.oid = to_regclass('usage_events')"
       );
       assert.equal(relation.rows[0]?.relkind, "p", "usage_events must be partitioned");
-
       const priceColumn = await client.query(
         "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'model_prices' AND column_name = 'price_version_id'"
       );
@@ -173,15 +227,25 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
        VALUES ('gpt-test', 1, 0.5, 2)`
     );
     const initialPrice = await scopedPool.query(
-      "SELECT price_version_id FROM model_prices WHERE model = 'gpt-test'"
+      "SELECT price_version_id FROM model_prices WHERE model = 'gpt-test' AND provider = '' AND service_tier = ''"
     );
     assert.ok(initialPrice.rows[0].price_version_id, "model price insert must create a version");
     await scopedPool.query(
-      "UPDATE model_price_versions SET valid_from = now() - interval '5 minutes' WHERE id = $1",
-      [initialPrice.rows[0].price_version_id]
+      `INSERT INTO model_prices (model, provider, service_tier, input_price_per_1m, cached_input_price_per_1m, output_price_per_1m)
+       VALUES ('gpt-test', 'anthropic', '', 3, 1, 6)`
     );
-
-    const eventTimestamp = new Date(Date.now() - 60_000).toISOString();
+    const providerPriceScopes = await scopedPool.query(
+      "SELECT count(*)::int AS scopes FROM model_prices WHERE model = 'gpt-test'"
+    );
+    assert.equal(providerPriceScopes.rows[0].scopes, 2, "same CPA model must allow both shared and provider-specific prices");
+    await scopedPool.query(
+      "INSERT INTO pricing_channels (channel, multiplier, note) VALUES ('openai', 2, 'PostgreSQL pricing integration test')"
+    );
+    const initialChannelVersion = await scopedPool.query(
+      "SELECT id, multiplier FROM pricing_channel_versions WHERE channel = 'openai' AND available = true ORDER BY effective_from DESC LIMIT 1"
+    );
+    assert.equal(Number(initialChannelVersion.rows[0].multiplier), 2);
+    const eventTimestamp = new Date(Date.now() + 60_000).toISOString();
     const record = {
       timestamp: eventTimestamp,
       provider: "openai",
@@ -273,14 +337,29 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     assert.equal(firstProcess.processed, 2);
 
     const pricedEvent = await scopedPool.query(
-      "SELECT price_version_id, cost_nanos, cost_currency, pricing_status FROM usage_events WHERE request_id = $1",
+      "SELECT price_version_id, channel_version_id, price_tier_index, resolved_service_tier, pricing_policy_version, cost_breakdown, cost_nanos, cost_currency, pricing_status FROM usage_events WHERE request_id = $1",
       ["phase1-request-001"]
     );
     assert.ok(pricedEvent.rows[0].price_version_id);
-    assert.equal(Number(pricedEvent.rows[0].cost_nanos), 140000);
+    assert.equal(Number(pricedEvent.rows[0].cost_nanos), 280000);
     assert.equal(pricedEvent.rows[0].cost_currency, "USD");
     assert.equal(pricedEvent.rows[0].pricing_status, "priced");
     assert.equal(Number(pricedEvent.rows[0].price_version_id), Number(initialPrice.rows[0].price_version_id));
+    assert.equal(Number(pricedEvent.rows[0].channel_version_id), Number(initialChannelVersion.rows[0].id));
+    assert.equal(pricedEvent.rows[0].pricing_policy_version, 1);
+    assert.equal(Number(pricedEvent.rows[0].cost_breakdown.channel_multiplier), 2);
+    await assert.rejects(
+      scopedPool.query("UPDATE usage_events SET pricing_status = 'unpriced' WHERE request_id = $1", ["phase1-request-001"]),
+      /priced usage evidence is immutable/
+    );
+    await assert.rejects(
+      scopedPool.query("UPDATE model_price_versions SET input_price_per_1m = 99 WHERE id = $1", [initialPrice.rows[0].price_version_id]),
+      /model price versions are immutable/
+    );
+    await assert.rejects(
+      scopedPool.query("UPDATE pricing_channel_versions SET multiplier = 99 WHERE id = $1", [initialChannelVersion.rows[0].id]),
+      /pricing channel versions are immutable/
+    );
     await scopedPool.query(
       "UPDATE usage_events SET cache_creation_tokens = 5 WHERE request_id IN ($1, $2)",
       ["phase1-request-001", "phase1-request-002"]
@@ -297,29 +376,36 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     await scopedPool.query(
       `INSERT INTO model_prices (model, input_price_per_1m, cached_input_price_per_1m, output_price_per_1m)
        VALUES ('gpt-test', 1, 0.5, 2)
-       ON CONFLICT (model) DO UPDATE SET
+       ON CONFLICT (model, provider, service_tier) DO UPDATE SET
          input_price_per_1m = EXCLUDED.input_price_per_1m,
          cached_input_price_per_1m = EXCLUDED.cached_input_price_per_1m,
          output_price_per_1m = EXCLUDED.output_price_per_1m`
     );
     const noOpPriceHistory = await scopedPool.query(
-      "SELECT count(*) AS versions FROM model_price_versions WHERE model = 'gpt-test'"
+      "SELECT count(*) AS versions FROM model_price_versions WHERE model = 'gpt-test' AND provider IS NULL"
     );
     assert.equal(Number(noOpPriceHistory.rows[0].versions), 1, "no-op upsert must not create a price version");
 
     await scopedPool.query(
       `INSERT INTO model_prices (model, input_price_per_1m, cached_input_price_per_1m, output_price_per_1m)
        VALUES ('gpt-test', 1.5, 0.5, 2)
-       ON CONFLICT (model) DO UPDATE SET
+       ON CONFLICT (model, provider, service_tier) DO UPDATE SET
          input_price_per_1m = EXCLUDED.input_price_per_1m,
          cached_input_price_per_1m = EXCLUDED.cached_input_price_per_1m,
          output_price_per_1m = EXCLUDED.output_price_per_1m`
     );
     const priceHistory = await scopedPool.query(
-      "SELECT count(*) AS versions, count(*) FILTER (WHERE valid_to IS NOT NULL) AS closed_versions FROM model_price_versions WHERE model = 'gpt-test'"
+      "SELECT count(*) AS versions, count(*) FILTER (WHERE valid_to IS NOT NULL) AS closed_versions FROM model_price_versions WHERE model = 'gpt-test' AND provider IS NULL"
     );
     assert.equal(Number(priceHistory.rows[0].versions), 2);
-    assert.equal(Number(priceHistory.rows[0].closed_versions), 1);
+    assert.equal(Number(priceHistory.rows[0].closed_versions), 0, "price versions are append-only and never rewritten");
+
+    await scopedPool.query("UPDATE pricing_channels SET multiplier = 3 WHERE channel = 'openai'");
+    const channelVersions = await scopedPool.query(
+      "SELECT id, multiplier FROM pricing_channel_versions WHERE channel = 'openai' ORDER BY effective_from, id"
+    );
+    assert.equal(channelVersions.rowCount, 2);
+    assert.deepEqual(channelVersions.rows.map((row) => Number(row.multiplier)), [2, 3]);
 
     const laterRecord = {
       ...record,
@@ -344,17 +430,19 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     });
     assert.equal(laterProcess.processed, 1);
     const laterPricedEvent = await scopedPool.query(
-      "SELECT price_version_id, cost_nanos FROM usage_events WHERE request_id = $1",
+      "SELECT price_version_id, channel_version_id, cost_nanos, cost_breakdown FROM usage_events WHERE request_id = $1",
       ["phase1-request-after-price-change"]
     );
     assert.notEqual(Number(laterPricedEvent.rows[0].price_version_id), Number(initialPrice.rows[0].price_version_id));
-    assert.equal(Number(laterPricedEvent.rows[0].cost_nanos), 180000);
+    assert.notEqual(Number(laterPricedEvent.rows[0].channel_version_id), Number(initialChannelVersion.rows[0].id));
+    assert.equal(Number(laterPricedEvent.rows[0].cost_nanos), 540000);
+    assert.equal(Number(laterPricedEvent.rows[0].cost_breakdown.channel_multiplier), 3);
 
     await scopedPool.query("DELETE FROM model_prices WHERE model = 'gpt-test'");
     const deletedPriceHistory = await scopedPool.query(
-      "SELECT count(*) FILTER (WHERE valid_to IS NULL) AS open_versions FROM model_price_versions WHERE model = 'gpt-test'"
+      "SELECT available FROM model_price_versions WHERE model = 'gpt-test' AND provider IS NULL ORDER BY valid_from DESC, id DESC LIMIT 1"
     );
-    assert.equal(Number(deletedPriceHistory.rows[0].open_versions), 0);
+    assert.equal(deletedPriceHistory.rows[0].available, false, "deleting a price must append an unavailable version");
 
     const firstCounts = await scopedPool.query(
       "SELECT (SELECT count(*) FROM usage_events) AS events, (SELECT count(*) FROM usage_event_identity) AS identities, (SELECT count(*) FROM usage_inbox WHERE status = 'processed') AS processed"
@@ -417,7 +505,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.input_tokens), 0), 300);
     assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.output_tokens), 0), 75);
     assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.total_tokens), 0), 390);
-    assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.cost_nanos), 0), 460000);
+    assert.equal(hourlyRollup.rows.reduce((sum, row) => sum + Number(row.cost_nanos), 0), 1_100_000);
     assert.ok(hourlyRollup.rows.every((row) => row.pricing_status === "priced"));
     assert.ok(hourlyRollup.rows.every((row) => row.api_key_mask === "****6789"));
     assert.ok(hourlyRollup.rows.every((row) => row.service_tier === "priority"));
@@ -429,7 +517,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     );
     assert.ok(dailyRollup.rowCount >= 1);
     assert.equal(dailyRollup.rows.reduce((sum, row) => sum + Number(row.request_count), 0), 3);
-    assert.equal(dailyRollup.rows.reduce((sum, row) => sum + Number(row.cost_nanos), 0), 460000);
+    assert.equal(dailyRollup.rows.reduce((sum, row) => sum + Number(row.cost_nanos), 0), 1_100_000);
     const checkpointStates = await scopedPool.query(
       "SELECT rollup_name, state FROM usage_rollup_checkpoints WHERE timezone = 'UTC' ORDER BY rollup_name"
     );
@@ -466,7 +554,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
       "SELECT sum(request_count) AS requests, sum(cost_nanos) AS cost, min(pricing_status) AS min_pricing, max(pricing_status) AS max_pricing FROM usage_rollups_daily WHERE model = 'gpt-test' AND timezone = 'UTC'"
     );
     assert.equal(Number(afterLateArrival.rows[0].requests), 4, "late-arriving event must be included in the rebuilt daily window");
-    assert.equal(Number(afterLateArrival.rows[0].cost), 460000, "unpriced late event must not invent cost");
+    assert.equal(Number(afterLateArrival.rows[0].cost), 1_100_000, "unpriced late event must not invent cost");
     assert.equal(afterLateArrival.rows[0].max_pricing, "partial");
     const coverageRollup = await scopedPool.query(
       "SELECT sum(priced_request_count) AS priced, sum(unpriced_request_count) AS unpriced FROM usage_rollups_daily WHERE model = 'gpt-test' AND timezone = 'UTC'"
@@ -479,7 +567,7 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
       "SELECT sum(request_count) AS requests, sum(cost_nanos) AS cost FROM usage_rollups_daily WHERE model = 'gpt-test' AND timezone = 'UTC'"
     );
     assert.equal(Number(idempotentRollup.rows[0].requests), 4, "rebuilding the same window must not double count events");
-    assert.equal(Number(idempotentRollup.rows[0].cost), 460000);
+    assert.equal(Number(idempotentRollup.rows[0].cost), 1_100_000);
 
     await scopedPool.query(`
       CREATE FUNCTION fail_identity_insert_for_test() RETURNS trigger
@@ -661,6 +749,13 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
     const subscriptionRecord = {
       ...record,
       request_id: "phase7-resp-subscription-event",
+      session_id: "session-resp-123",
+      parent_session_id: "session-parent-resp-123",
+      execution_id: "execution-resp-123",
+      trace_id: "trace-resp-123",
+      node_kind: "message",
+      is_fork: true,
+      is_compaction: false,
       timestamp: new Date().toISOString()
     };
     await persistSubscribedUsageEvent(scopedPool, {
@@ -694,6 +789,19 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
       "SELECT count(*)::int AS count FROM usage_events WHERE request_id='phase7-resp-subscription-event'"
     );
     assert.equal(subscriptionEvent.rows[0].count, 1);
+    const subscriptionContext = await scopedPool.query(
+      "SELECT session_id, parent_session_id, execution_id, trace_id, node_kind, is_fork, is_compaction FROM usage_events WHERE request_id=$1",
+      ["phase7-resp-subscription-event"]
+    );
+    assert.deepEqual(subscriptionContext.rows[0], {
+      session_id: "session-resp-123",
+      parent_session_id: "session-parent-resp-123",
+      execution_id: "execution-resp-123",
+      trace_id: "trace-resp-123",
+      node_kind: "message",
+      is_fork: true,
+      is_compaction: false
+    });
     const subscriptionSummary = await completeSubscriptionAttempt(scopedPool, subscriptionAttempt);
     assert.equal(Number(subscriptionSummary.received_count), 1);
 
@@ -717,9 +825,12 @@ test("PostgreSQL event pipeline: durable Inbox, Processor, pricing, deduplicatio
 
     // Terminate one PostgreSQL backend; the pool must reconnect on the next query.
     const doomedClient = await scopedPool.connect();
+    const backendErrorPromise = new Promise((resolve) => doomedClient.once("error", resolve));
     const backend = await doomedClient.query("SELECT pg_backend_pid() AS pid");
-    await adminPool.query("SELECT pg_terminate_backend($1)", [backend.rows[0].pid]);
-    await assert.rejects(doomedClient.query("SELECT 1"));
+    const termination = await adminPool.query("SELECT pg_terminate_backend($1)", [backend.rows[0].pid]);
+    assert.equal(termination.rows[0].pg_terminate_backend, true);
+    const backendError = await backendErrorPromise;
+    assert.equal(backendError.code, "57P01", "the terminated backend error should be observed by the borrowed client");
     doomedClient.release(true);
     const recoveredConnection = await scopedPool.query("SELECT 1 AS recovered");
     assert.equal(recoveredConnection.rows[0].recovered, 1);

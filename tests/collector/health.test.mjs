@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { evaluateCollectorHealth, getCollectorHealthStaleAfterMs } from "../../lib/collector/health.mjs";
+import { evaluateCollectorHealth, getCollectorHealthStaleAfterMs, countRecentFullPullBatches } from "../../lib/collector/health.mjs";
 
 const now = new Date("2026-11-17T12:00:00.000Z");
 const healthyRow = {
@@ -55,4 +55,17 @@ test("collector health reads snake_case database error columns", () => {
   const result = evaluateCollectorHealth({ ...healthyRow, state: "checking", last_error_code: "resp_pull_failed" }, { now });
   assert.equal(result.status, "degraded");
   assert.equal(result.reason, "resp_pull_failed");
+});
+
+test("capacity warning counts only full FIFO pull batches, not RESP subscription events", () => {
+  assert.equal(countRecentFullPullBatches([
+    { transport: "resp-subscribe", requested_count: 1, received_count: 8 },
+    { transport: "resp", requested_count: 100, received_count: 100 },
+    { transport: "http", requested_count: 100, received_count: 120 },
+    { transport: "resp", requested_count: 100, received_count: 99 },
+    { transport: "unknown", requested_count: 1, received_count: 1 }
+  ]), 2);
+  assert.equal(countRecentFullPullBatches([
+    { transport: "resp-subscribe", requested_count: 1, received_count: 37 }
+  ]), 0);
 });

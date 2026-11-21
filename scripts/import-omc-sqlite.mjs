@@ -5,6 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import pg from "pg";
 import { validateImportTarget } from "./import-target-policy.mjs";
+import { importOmcErrors } from "./import-omc-errors.mjs";
 
 const { Pool } = pg;
 const SOURCE_KEY = "oh-my-cpa:default";
@@ -411,7 +412,21 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error("Phase 6 OMC import failed:", error.message);
+async function errorsOnly() {
+  const source = required(arg("--source"), "--source");
+  const databaseUrl = required(process.env.DATABASE_URL, "DATABASE_URL");
+  validateImportTarget(databaseUrl, {
+    allowProductionTarget: process.argv.includes("--allow-production-target"),
+    productionEnvironmentOptIn: process.env.PHASE6_IMPORT_ALLOW_PRODUCTION_TARGET === "true"
+  });
+  const pool = new Pool({ connectionString: databaseUrl, max: 1, connectionTimeoutMillis: 5000, statement_timeout: 30000, application_name: "phase55-omc-error-import" });
+  pool.on("error", () => { process.exitCode = 1; });
+  try {
+    console.log(JSON.stringify(await importOmcErrors({ pool, source, expectedHash: arg("--source-sha256"), batchSize: Number(arg("--batch-size", "250")) })));
+  } finally { await pool.end(); }
+}
+
+(process.argv.includes("--errors-only") ? errorsOnly() : main()).catch((error) => {
+  console.error(process.argv.includes("--errors-only") ? "OMC error import failed (inspect cpa_error_import_runs)" : "Phase 6 OMC import failed: " + error.message);
   process.exitCode = 1;
 });

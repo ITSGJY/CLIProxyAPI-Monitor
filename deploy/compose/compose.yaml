@@ -15,8 +15,12 @@ services:
       CLIPROXY_API_BASE_URL: ${CLIPROXY_API_BASE_URL:-}
       CLIPROXY_SECRET_KEY: ${CLIPROXY_SECRET_KEY:-}
       CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET}
+      CPA_INSTANCE_ID: ${CPA_INSTANCE_ID:-}
+      ERROR_COLLECTOR_ENABLED: ${ERROR_COLLECTOR_ENABLED:-false}
+      ERROR_CORRELATION_WINDOW_MS: ${ERROR_CORRELATION_WINDOW_MS:-120000}
     ports:
       - "127.0.0.1:15300:3000"
+
     networks:
       - personal-cloud-hub
     security_opt:
@@ -65,6 +69,8 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    healthcheck:
+      disable: true
 
   collector:
     image: ${MONITOR_IMAGE:?Set MONITOR_IMAGE to a pinned GHCR image tag}
@@ -101,6 +107,49 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "scripts/collector-health.mjs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  error-collector:
+    image: ${MONITOR_IMAGE:?Set MONITOR_IMAGE to a pinned GHCR image tag}
+    container_name: cliproxyapi-monitor-error-collector
+    profiles: ["error-collector"]
+    command: ["node", "scripts/error-collector.mjs"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    network_mode: host
+    environment:
+      DATABASE_URL: ${MONITOR_DATABASE_URL_HOST:-}
+      CPA_INSTANCE_ID: ${CPA_INSTANCE_ID:?Set CPA_INSTANCE_ID}
+      CPA_REDIS_ADDR: ${CPA_ERROR_REDIS_ADDR:-127.0.0.1:8317}
+      CPA_MANAGEMENT_KEY: ${CPA_MANAGEMENT_KEY:-}
+      ERROR_COLLECTOR_ENABLED: ${ERROR_COLLECTOR_ENABLED:-false}
+      ERROR_COLLECTOR_ALLOW_PRODUCTION_TARGET: ${ERROR_COLLECTOR_ALLOW_PRODUCTION_TARGET:-false}
+      ERROR_COLLECTOR_ALLOW_PRODUCTION_DATABASE: ${ERROR_COLLECTOR_ALLOW_PRODUCTION_DATABASE:-false}
+      ERROR_COLLECTOR_LEASE_SECONDS: ${ERROR_COLLECTOR_LEASE_SECONDS:-45}
+      ERROR_COLLECTOR_MAX_PENDING: ${ERROR_COLLECTOR_MAX_PENDING:-256}
+      ERROR_COLLECTOR_MAX_PENDING_BYTES: ${ERROR_COLLECTOR_MAX_PENDING_BYTES:-1048576}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "scripts/error-collector-health.mjs"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   rollup:
     image: ${MONITOR_IMAGE:?Set MONITOR_IMAGE to a pinned GHCR image tag}
@@ -129,6 +178,8 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    healthcheck:
+      disable: true
 
 networks:
   personal-cloud-hub:

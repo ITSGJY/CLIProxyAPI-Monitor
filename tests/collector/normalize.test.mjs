@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   hashRawPayload,
+  usageControlMessageKind,
   normalizeUsageRecord,
   sanitizeUsagePayload
 } from "../../lib/collector/normalize.mjs";
@@ -11,6 +12,13 @@ const baseRecord = {
   provider: "openai",
   model: "gpt-test",
   request_id: "request-123",
+  session_id: "session-123",
+  parent_session_id: "session-parent-123",
+  execution_id: "execution-123",
+  trace_id: "trace-123",
+  node_kind: "message",
+  is_fork: true,
+  is_compaction: false,
   api_key: "sk-test-secret-123456789",
   tokens: {
     input_tokens: 100,
@@ -20,6 +28,15 @@ const baseRecord = {
     total_tokens: 125
   }
 };
+
+test("recognizes CPA RESP control messages without classifying usage records as control", () => {
+  assert.equal(usageControlMessageKind('{"support_refresh":true}'), "support_refresh");
+  assert.equal(usageControlMessageKind('{"refresh":true}'), "refresh");
+  assert.equal(usageControlMessageKind(baseRecord), null);
+  assert.equal(usageControlMessageKind('{"support_refresh":true,"timestamp":"2026-11-17T00:00:00Z"}'), null);
+  assert.equal(usageControlMessageKind("not-json"), null);
+});
+
 
 test("normalization stores only a masked API key and redacted raw payload", () => {
   const normalized = normalizeUsageRecord(baseRecord, {
@@ -31,6 +48,13 @@ test("normalization stores only a masked API key and redacted raw payload", () =
   assert.equal(normalized.inputTokens, 100);
   assert.equal(normalized.outputTokens, 20);
   assert.equal(normalized.totalTokens, 125);
+  assert.equal(normalized.sessionId, "session-123");
+  assert.equal(normalized.parentSessionId, "session-parent-123");
+  assert.equal(normalized.executionId, "execution-123");
+  assert.equal(normalized.traceId, "trace-123");
+  assert.equal(normalized.nodeKind, "message");
+  assert.equal(normalized.isFork, true);
+  assert.equal(normalized.isCompaction, false);
   assert.equal(normalized.rawPayload.api_key, "****6789");
   assert.equal(JSON.stringify(normalized.rawPayload).includes("sk-test-secret"), false);
 });
@@ -52,10 +76,9 @@ test("request identity is stable across legacy-source differences", () => {
 });
 
 test("canonical fallback identity is stable when no request identifiers exist", () => {
-  const record = { ...baseRecord, request_id: undefined, api_key: undefined };
+  const record = { ...baseRecord, request_id: undefined, execution_id: undefined, trace_id: undefined, api_key: undefined };
   const first = normalizeUsageRecord(record, { sourceInstanceId: "default" });
   const second = normalizeUsageRecord({ ...record }, { sourceInstanceId: "default" });
-
   assert.equal(first.identityKind, "canonical_fingerprint");
   assert.equal(first.identityKey, second.identityKey);
 });

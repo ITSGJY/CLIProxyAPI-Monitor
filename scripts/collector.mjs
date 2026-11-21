@@ -3,6 +3,8 @@ import { getPullBackoffMs } from "../lib/collector/retry.mjs";
 import { loadCollectorConfig } from "../lib/collector/config.mjs";
 import { pullUsageViaResp, subscribeUsageViaResp } from "../lib/collector/resp-client.mjs";
 import { pullUsageViaHttp } from "../lib/collector/http-queue.mjs";
+import { usageControlMessageKind } from "../lib/collector/normalize.mjs";
+
 import {
   acquireCollectorLease,
   claimCollectorCommands,
@@ -113,6 +115,11 @@ async function runSubscriptionSession(pool, config, stopSignal, refreshLease) {
         });
       },
       onMessage: async (payload) => {
+        const controlMessage = usageControlMessageKind(payload);
+        if (controlMessage) {
+          console.info(`CPA RESP ${controlMessage} control message ignored`);
+          return;
+        }
         await persistSubscribedUsageEvent(pool, {
           attemptId,
           instanceId: config.instanceId,

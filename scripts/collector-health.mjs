@@ -1,4 +1,4 @@
-import { getCollectorHealthStaleAfterMs, evaluateCollectorHealth } from "../lib/collector/health.mjs";
+import { getCollectorHealthStaleAfterMs, evaluateCollectorHealth, countRecentFullPullBatches } from "../lib/collector/health.mjs";
 
 function safeError(error) {
   return String(error instanceof Error ? error.message : error ?? "unknown error")
@@ -58,13 +58,13 @@ async function run() {
     let recentFullBatchCount = 0;
     if (row) {
       const attempts = await pool.query(
-        `SELECT requested_count, received_count
+        `SELECT transport, requested_count, received_count
          FROM usage_pull_attempts
-         WHERE instance_id = $1 AND status = 'completed'
+         WHERE instance_id = $1 AND status = 'completed' AND transport IN ('resp', 'http')
          ORDER BY id DESC LIMIT 5`,
         [instanceId]
       );
-      recentFullBatchCount = attempts.rows.filter((attempt) => Number(attempt.received_count) >= Number(attempt.requested_count)).length;
+      recentFullBatchCount = countRecentFullPullBatches(attempts.rows);
     }
 
     const report = {

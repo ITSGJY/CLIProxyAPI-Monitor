@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
 import { assertEnv } from "@/lib/config";
-import { getUsageRecords, type SortKey } from "@/lib/queries/records";
+import { getUsageRecords, type SortField, type SortKey } from "@/lib/queries/records";
+import { parseRecordsFilters, RecordsFilterError } from "@/lib/records-filters";
 
 export const runtime = "nodejs";
+
+const VALID_SORT_FIELDS = new Set<SortField>([
+  "occurredAt", "model", "route", "source", "provider", "requestId",
+  "totalTokens", "inputTokens", "outputTokens", "reasoningTokens", "cachedTokens",
+  "cacheReadTokens", "cacheCreationTokens", "latencyMs", "ttftMs", "cost", "isError",
+  "sessionId", "parentSessionId", "executionId", "traceId", "nodeKind", "isFork", "isCompaction"
+]);
 
 export async function GET(request: Request) {
   try {
@@ -13,58 +21,44 @@ export async function GET(request: Request) {
 
   try {
     const { searchParams } = new URL(request.url);
-    const limitParam = searchParams.get("limit");
-    const VALID_SORT_FIELDS = new Set(["occurredAt", "model", "route", "source", "totalTokens", "inputTokens", "outputTokens", "reasoningTokens", "cachedTokens", "cost", "isError"]);
-    const sortParam = searchParams.get("sort");
     let sortKeys: SortKey[] | undefined;
+    const sortParam = searchParams.get("sort");
     if (sortParam) {
-      const parsed = sortParam.split(",").map(part => {
-        const [f, o] = part.split(":");
-        return { field: (f ?? "").trim(), order: (o ?? "desc").trim() };
-      }).filter(k => VALID_SORT_FIELDS.has(k.field) && (k.order === "asc" || k.order === "desc")) as SortKey[];
+      const parsed = sortParam.split(",").map((part) => {
+        const [field, order] = part.split(":");
+        return { field: (field ?? "").trim(), order: (order ?? "desc").trim() };
+      }).filter((item) => VALID_SORT_FIELDS.has(item.field as SortField) && (item.order === "asc" || item.order === "desc")) as SortKey[];
       if (parsed.length > 0) sortKeys = parsed;
     }
-    // Legacy fallback
+
     const legacySortField = searchParams.get("sortField");
     const legacySortOrder = searchParams.get("sortOrder");
-    const sortField = !sortKeys && legacySortField && VALID_SORT_FIELDS.has(legacySortField) ? legacySortField as SortKey["field"] : undefined;
+    const sortField = !sortKeys && legacySortField && VALID_SORT_FIELDS.has(legacySortField as SortField)
+      ? legacySortField as SortField
+      : undefined;
     const sortOrder = !sortKeys && (legacySortOrder === "asc" || legacySortOrder === "desc") ? legacySortOrder : undefined;
-    const cursor = searchParams.get("cursor");
-    const model = searchParams.get("model");
-    const route = searchParams.get("route");
-    const source = searchParams.get("source");
-    const provider = searchParams.get("provider");
-    const serviceTier = searchParams.get("serviceTier");
-    const statusParam = searchParams.get("status");
-    if (statusParam && statusParam !== "success" && statusParam !== "error") return NextResponse.json({ error: "Invalid status filter" }, { status: 400 });
-    const status = statusParam as "success" | "error" | null;
-    const currency = searchParams.get("currency");
-    const start = searchParams.get("start");
-    const end = searchParams.get("end");
-    const includeFilters = searchParams.get("includeFilters") === "1";
-
+    const limitParam = searchParams.get("limit");
     const limit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
+    if (limitParam && (!Number.isInteger(limit) || (limit ?? 0) < 1)) {
+      return NextResponse.json({ error: "Invalid limit" }, { status: 400 });
+    }
 
+    const filters = parseRecordsFilters(searchParams);
     const payload = await getUsageRecords({
+      ...filters,
       limit,
       sortKeys,
       sortField,
       sortOrder,
-      cursor,
-      model: model || undefined,
-      route: route || undefined,
-      source: source || undefined,
-      provider: provider || undefined,
-      serviceTier: serviceTier || undefined,
-      status,
-      currency: currency || undefined,
-      start,
-      end,
-      includeFilters
+      cursor: searchParams.get("cursor"),
+      includeFilters: searchParams.get("includeFilters") === "1",
+      includeTotal: searchParams.get("includeTotal") === "1"
     });
-
-    return NextResponse.json(payload, { status: 200 });
+    return NextResponse.json(payload, { status: 200, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
+    if (error instanceof RecordsFilterError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
     console.error("/api/records failed:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }

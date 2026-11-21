@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { processInboxBatch } from "../lib/collector/postgres-store.mjs";
+import { syncPricingIfDue } from "../lib/pricing/sync.mjs";
 
 function positiveInteger(value, name, fallback, max) {
   const parsed = value === undefined || value === "" ? fallback : Number(value);
@@ -31,7 +32,22 @@ async function run() {
   try {
     await pool.query("SELECT 1");
     console.log(`Usage Processor ready; instance=${instanceId}; worker=${workerId}; batch=${batchSize}`);
+    let nextPricingSyncCheckAt = 0;
+    let pricingSyncInFlight = false;
     while (!controller.signal.aborted) {
+      if (!pricingSyncInFlight && Date.now() >= nextPricingSyncCheckAt) {
+        nextPricingSyncCheckAt = Date.now() + 5 * 60 * 1000;
+        pricingSyncInFlight = true;
+        void syncPricingIfDue(pool)
+          .then((result) => {
+            if (result.status !== "not_due") console.log(JSON.stringify({ event: "pricing_catalog_sync", ...result }));
+          })
+          .catch((error) => {
+            const message = String(error instanceof Error ? error.message : error).slice(0, 240);
+            console.error("Pricing catalog auto-sync failed:", message);
+          })
+          .finally(() => { pricingSyncInFlight = false; });
+      }
       const summary = await processInboxBatch(pool, { instanceId, workerId, batchSize, leaseSeconds, maxAttempts });
       if (summary.claimed > 0) console.log(JSON.stringify({ event: "usage_inbox_processed", ...summary }));
       if (summary.claimed === 0) {

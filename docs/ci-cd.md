@@ -10,14 +10,15 @@
 - disposable PostgreSQL migrations and authenticated Playwright browser acceptance
 - PostgreSQL 17 container restart durability test
 
-Pushes to `main` and `feat/phase6-legacy-import`, plus manual workflow dispatches, then build and publish an immutable `sha-<7>` image to GHCR for both `linux/amd64` and `linux/arm64`. The workflow checks the ARM64 manifest/runtime and launches a container smoke test.
+Pushes to `main` and `feat/phase6-legacy-import`, plus manual workflow dispatches, build immutable per-architecture images on native GitHub-hosted AMD64 and ARM64 runners. The workflow then assembles the `sha-<7>` multi-architecture manifest in GHCR, verifies both platforms and the migration runtime, and runs a container smoke test.
 
 Production deployment runs only after every validation and image job succeeds:
 
 - Push to `main`: automatic production deployment.
 - Feature branch: build and publish only; use `workflow_dispatch` with `deploy_production=true` to deploy that exact tested commit.
 - Pull requests: validation only; no GHCR push and no production secrets.
-- A production concurrency group prevents overlapping deployments.- `main` is protected: pull requests must be up to date and pass both the PostgreSQL 17 restart check and the full test / browser-acceptance check. Force pushes and branch deletion are disabled; conversation resolution is required.
+- A production concurrency group prevents overlapping deployments.
+- `main` is protected: pull requests must be up to date and pass both the PostgreSQL 17 restart check and the full test / browser-acceptance check. Force pushes and branch deletion are disabled; conversation resolution is required.
 - The `production` GitHub Environment permits deployment only from `main` and `feat/phase6-legacy-import`.
 
 ## Restricted deployment access
@@ -38,9 +39,9 @@ Do not reuse this key for interactive administration. Rotate it by replacing the
 2. Verify at least 1 GiB free disk space.
 3. Create a PostgreSQL custom-format backup before migrations.
 4. Run `pg_restore --list`, restore the backup into a temporary database, verify it and drop the temporary database.
-5. Pull the immutable Web / Processor / Rollup image.
+5. Pull the immutable Web / Processor / Rollup image, plus Collector when it was already running.
 6. Execute the reviewed SQL migration runner as a separate one-off container.
-7. Roll out Web / Processor / Rollup and wait for the Web healthcheck plus `/login` response.
+7. Roll out Web / Processor / Rollup and preserve the Collector's previous running state; when Collector was active, wait for both Web and Collector healthchecks.
 8. Retain recent backups for 14 days and print the deployed image and Compose status.
 
 If image pull, migration or application health fails, the deployment helper restores the previous application image. Database migrations are forward-only; the helper never attempts an unsafe automatic schema downgrade. A backup is retained for manual recovery.
@@ -51,6 +52,7 @@ If image pull, migration or application health fails, the deployment helper rest
 - Cloudreve's database, role, Redis and data volume are not modified.
 - The production Collector remains a separate opt-in Compose profile and uses native RESP `SUBSCRIBE usage`; it does not use destructive FIFO LPOP.
 - Web, Processor and Rollup are deployed by the pipeline. Collector is enabled only after the production database and dashboard have passed their initial acceptance.
+- Subsequent deployments preserve Collector's prior state: an active Collector is pulled, rolled out and health-checked with the same immutable image; a deliberately stopped Collector remains stopped.
 - Nginx and DNS are managed separately from the application rollout so a deployment cannot overwrite Beszel's existing `monitor.gjy666.eu.cc` site.
 
 ## Operator commands

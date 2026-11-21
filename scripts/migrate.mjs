@@ -121,16 +121,17 @@ async function runMigrations() {
     );
     const existingHashes = new Set(existingMigrations.rows.map((r) => r.hash));
 
-    // 检查 model_prices 表是否存在
+    // Only inspect the target schema resolved by this connection's search_path.
+    // A model_prices table in an unrelated test/tenant schema must not mark 0000 as applied.
     const tableExists = await pool.query(
-      "SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = 'model_prices' AND c.relkind IN ('r','p') LIMIT 1"
+      "SELECT to_regclass('model_prices') IS NOT NULL AS exists"
     );
 
     // 如果表已存在，需要确保对应的迁移已标记
-    if (tableExists.rows.length > 0) {
+    if (tableExists.rows[0]?.exists === true) {
       // 找出 0000 迁移
       const initialMigration = allMigrations.find((m) => m.tag.startsWith("0000_"));
-      
+
       if (initialMigration && !existingHashes.has(initialMigration.hash)) {
         console.log("检测到表已存在但迁移未标记，正在标记...");
         await pool.query(

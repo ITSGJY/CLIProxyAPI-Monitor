@@ -1,5 +1,47 @@
 # CHANGELOG
 
+## 2026-11-21
+
+- 将站点根 HTML 语言标记从 `en` 修正为 `zh-CN`，避免中文界面被浏览器误判为英文并反复触发翻译提示。
+
+- 将首页首屏加载、手动刷新和自动刷新统一为只读 PostgreSQL 查询；不再通过 Dashboard 刷新入口提交 `pull_now` 采集命令。`/records` 刷新也直接重新查询数据库中的请求事件。
+- 首页时间范围新增「全部」，统计与按日趋势覆盖全部历史请求；为控制小时级图表数据量，「全部」模式下小时趋势展示最近 367 天。
+- 侧边栏与登录页的 GitHub 项目链接统一指向 `ITSGJY/CLIProxyAPI-Monitor` Fork，并加入浏览器验收。
+- 首页与调用记录页的刷新结果统一通过自动消失的 Toast 展示数据变化：仅显示新增数量或「暂无新增数据」，不显示负数差值、刷新来源或完成状态前缀；首页 Toast 上移并与 Records 页面统一定位。
+- 修复首页自动刷新：启用时立即执行一次只读数据库刷新，随后由真实 Web Worker 按所选间隔持续轮询；将不含敏感信息的计时器脚本加入静态资源放行，并以真实 Worker 验收首次刷新、周期刷新和关闭后停止。
+- 修复生产 Docker 镜像遗漏 Next.js `public` 目录导致自动刷新 Worker 返回 404；容器发布前 smoke test 增加静态 Worker 的 HTTP 状态、Content-Type 和脚本内容检查。
+- `/records` 跟随仪表盘自动刷新开关与频率：共享开关状态在页面路由切换时保留，Records 只读取仪表盘保存的间隔配置，不再提供独立控制；开启时立即刷新，随后按相同频率轮询，关闭或离开页面后停止。
+
+## 2026-11-20
+
+- 完成 Phase 5.5 凭据错误事件：对照 CPA v8.0.56 / OMC v0.4.2 固定源码契约，新增独立 `SUBSCRIBE errors` 连接、进程和可选 Compose 服务；保持既有 Usage、Inbox、Pricing、Records 列表及四标签详情结构不变。
+- 新增 PostgreSQL 迁移 `0011`、Drizzle 错误事实/采集状态/订阅会话/历史导入审计与成员表，支持实例范围幂等、lease epoch fencing、独立心跳、限流背压、指数退避重连、健康检查和显式覆盖缺口。
+- 错误事件仅保留白名单与脱敏正文/状态；不保存原始 payload 或明文 auth_id，不在日志/API/UI 中输出敏感错误内容；完整保存凭据和模型配额、冷却、重试、恢复及退避证据。
+- Records 诊断增加凭据关联错误：同实例、非空 auth_index、前后 120 秒闭区间、按绝对时间差稳定排序并限制 20 条；展示有符号时间差、Provider/模型匹配和覆盖状态，明确不构成因果证明。事件与覆盖使用同一数据库快照，防止读竞争误报完整空结果。
+- 扩展只读 OMC SQLite 导出与 Node `--errors-only` 导入，兼容模型冷却迁移前后的可选列；保留 auth_index/原始时间、固定 legacy 实例、验证快照 SHA256 和最终计数、拒绝变更的源行身份、支持重复导入与中断审计；缺少 error_events 明确记为 unavailable。
+- 新增单元、PostgreSQL 17、旧/新 SQLite 导入、边界与隐私回归测试及 CI 架构 guard；扩展浏览器验收覆盖错误正文转义，补充 Phase 5.5 架构与运维手册。
+- Phase 5.5 已部署到 Oracle：初始镜像 sha-4a7d173，后续健康检查修复镜像 sha-7f871e9；GitHub Actions runs 44750179409、44759282422 均成功。迁移 0011 应用，Web/Usage Collector/Error Collector 健康，Production 分支白名单已恢复。
+- 修复 Usage Collector 健康检查把 RESP SUBSCRIBE 累计广播事件误判为 FIFO 满批次的问题；现在 recentFullBatchCount 只统计 resp/http Pull，生产验收 capacityWarning=false，Inbox 无积压。
+- 完成 OMC v0.4.8 历史导入：17,170 条 Usage 源行经 42 条与实时 Usage 完全匹配的重复项校正后保留 17,128 条；112 个价格版本、156 条错误事件全部完成数量核对。5 条 OMC 独有断线间隙记录保留；120 天 Rollup 已回填，Records API 历史关联烟测通过。实时 Error Collector 已健康订阅，等待首条自然错误事件完成实时写入验收。
+
+## 2026-11-19
+
+- 启动 Pricing Center V1：完成现有价格链路审计，明确 models.dev 主价格源、OpenRouter 只读参考、Auto/Linked/Custom 模式及请求级不可变成本证据。
+- 新增 PostgreSQL 价格目录、同步状态、模型映射、渠道倍率版本及四桶价格扩展迁移（Phase 1）；保留 OMC 历史价格快照，不触碰历史 Usage 记录。
+- 完成 Phase 2：接入 models.dev 主价格目录和 OpenRouter 只读参考，保存 SHA256 / ETag / Last-Modified / 同步快照；仅允许精确 ID、唯一 Offering 或计价字段完全一致的 Offering 自动匹配，歧义项要求人工 Linked。
+- 完成 Phase 3：新增 BigInt 定点十进制 Quote Engine，按普通输入、输出、缓存读取、缓存写入四桶计价；加入模型 / 渠道倍率、Service Tier / Prompt 阈值 / IANA 时区 Tier 选择，并在 Inbox 事务内保存价格版本、渠道版本、成本及计算明细。
+- 完成 Phase 4：新增独立 \`/pricing\` 页面与价格、同步、关联、渠道倍率、试算 API；支持 Auto / Linked / Custom、四桶编辑、Tier JSON、自动同步间隔、源目录状态及价格 / 渠道历史。
+- 价格版本与已计价请求证据改为不可变追加式记录；缺失费率不再按零计费，超出 PostgreSQL bigint 范围或 Token 桶不一致时拒绝生成金额。
+- 新增 Pricing 单元与 PostgreSQL 17 回归覆盖；未执行 Phase 5 历史回算，未切换或停止生产 CPA Collector / RESP Subscription。
+- 修复 PostgreSQL 17 集成测试对 `numeric(30,12)` 渠道倍率的字符串比较问题，改为数值断言，避免数据库固定小数位格式造成误报。
+- 参考 OMC v0.4.2 的详情信息层级重构 `/records` 抽屉，拆分为“概览 / 用量与计价 / 诊断 / 原始字段”四个视图；首屏突出请求状态、耗时、TTFT、输出速率、Token 和费用。
+- 详情概览新增调用链路、模型路由、性能阶段与 Token 构成；用量页展示 Token Accounting、Structured Usage、四桶费率及价格/渠道版本证据；诊断页将响应头改为表格并增加网络信息。
+- 新增按事件 ID 安全代理下载 CPA 请求日志的接口；详情查询补充渠道版本、Tier、计价策略、成本明细及 Resource ID/Name。
+- 保留 Monitor 原有 Slate 深色面板、Indigo 强调色与现有 Tailwind 组件风格，不引入 OMC 的独立主题系统。
+
+- 完成 `/records` 请求事件分析工作台改造：支持自定义列、详情抽屉、高级筛选和 CSV/JSON 导出；新增 CPA 请求上下文专用字段及 PostgreSQL 迁移。
+- 修复迁移预检误将其他 schema 中的 `model_prices` 当作当前目标 schema 已迁移的问题，并增加 PostgreSQL 回归断言。
+
 ## 2026-11-17
 
 - 推进 Phase 4 Processor 与计费处理流水线：
@@ -350,3 +392,7 @@
 - 新增 `0008_resp_subscription.sql`，扩展 collector mode、pull attempt、Inbox 和 usage event transport 约束。
 - 增加 RESP fake-server 测试、PostgreSQL Inbox/Processor 集成测试、断线 gap 测试；44 项 Collector 测试、PostgreSQL、OMC 导入、typecheck、lint 和 Next.js build 全部通过。
 - 通过真实 Collector 进程 + 隔离 RESP fake CPA + PostgreSQL 17 完成端到端订阅验证：收到 1 条事件、Inbox 持久化 1 条、SIGTERM 后正常 UNSUBSCRIBE 并结束会话。
+
+## 2026-11-21
+
+- 精简首页仪表盘：移除价格覆盖率统计条和 Pricing Center 推广区块，并清理仅由该入口触发的旧版模型价格同步弹窗；独立 `/pricing` 页面的同步、价格管理、模型关联与成本试算功能保持不变。

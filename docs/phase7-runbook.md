@@ -20,31 +20,35 @@ Acceptance gates:
 - They join the existing `personal-cloud-hub_default` network and connect to a dedicated Monitor database in the existing PostgreSQL 17 container. They do not use Cloudreve's database or role.
 - CPA binds its RESP/management listener to `127.0.0.1:8317`. The Collector therefore runs in a dedicated Docker Compose `collector` profile using `network_mode: host`; this lets it reach CPA loopback without exposing port 8317. Production pins `COLLECTOR_MODE=subscribe` and `COLLECTOR_ALLOW_PULL_FALLBACK=false`; it joins the native `SUBSCRIBE usage` broadcast stream alongside OMC/Keeper and never consumes the FIFO queue.
 - The Collector is an independent broadcast subscriber and can coexist with OMC and Keeper. FIFO pull is disabled in production because it is destructive and unsafe while any other Usage subscriber is connected.
+- CPA v8 sends `{"support_refresh":true}` immediately after `SUBSCRIBE usage` and can send `{"refresh":true}` control frames later. These are control notifications, not usage records; the Collector must ignore them before Inbox persistence. Regression tests cover both frames.
 - CI builds and publishes immutable `sha-*` image tags. The production host pulls the exact pinned tag; it does not run Node/pnpm builds.
 
-## Current production observations (read-only preflight)
+## Current production observations (2026-11-20)
 
-- Existing PostgreSQL: PostgreSQL 17 container in `personal-cloud-hub` project, network `personal-cloud-hub_default`, current container address `172.20.0.4`.
-- Existing database/role: `cloudreve`; no Monitor database or role exists yet.
-- CPA listener: `127.0.0.1:8317`; usage statistics are enabled.
-- CPA `redis-usage-queue-retention-seconds` was 300 seconds and has been increased to the documented maximum of 3,600 seconds (1 hour) through the v8 Management API hot-reload path. The original config is backed up at `/opt/cpa/cliproxyapi/config.yaml.phase7-precutover.bak`. See the [official Redis Usage Queue specification](https://help.router-for.me/management/redis-usage-queue).
-- OMC is currently configured with `OMCPA_USAGE_INGEST_MODE=subscribe` and logs `usage ingest subscribed`. CPA Usage Keeper's documentation explicitly requires subscription mode when multiple collectors share one CPA instance; its process also has active connections to CPA.
-- Official CPA RESP documentation states that while at least one `SUBSCRIBE usage` client is connected, events are broadcast to all subscribers and are not stored in the FIFO queue. Monitor now joins that broadcast stream by default; explicit FIFO pull is only a compatibility option when no subscribers remain.
-- CPAMP currently shows model-price synchronization activity; there is no evidence in its recent logs that it is a usage subscriber.
-- The Monitor has not been deployed and no production Collector has been enabled.
+- PostgreSQL 17 is running in personal-cloud-hub-postgres-1. Monitor uses its dedicated cliproxyapi_monitor database and least-privilege cliproxyapi_monitor role; Cloudreve data/role are not used.
+- CPA management/RESP listener remains bound to 127.0.0.1:8317. The Usage Collector runs in host-network collector profile and subscribes to usage; it never LPOPs while OMC/Keeper subscribers are active.
+- OMC v0.4.8 remains in subscribe mode. CPA Usage Keeper remains an independent Usage broadcast subscriber.
+- The current deployed immutable image is ghcr.io/itsgjy/cliproxyapi-monitor:sha-7f871e9 (initial Phase 5.5 release: sha-4a7d173). Web, Processor, Rollup, Usage Collector and Error Collector are running; Web and both Collectors have healthy Docker healthchecks.
+- Usage Collector health reports healthy, recentFullBatchCount=0 and capacityWarning=false. The false-positive was fixed by counting only resp/http FIFO Pull attempts; RESP SUBSCRIBE broadcast events are excluded.
+- The Error Collector uses a separate host-network process and RESP connection for SUBSCRIBE errors. It is enabled for CPA instance oracle-primary with ERROR_CORRELATION_WINDOW_MS=120000. ERROR_COLLECTOR_ALLOW_PRODUCTION_TARGET and ERROR_COLLECTOR_ALLOW_PRODUCTION_DATABASE are explicit production opt-ins. Its database health API currently reports healthy=true/status=collecting.
+- The current error subscription session was acknowledged at 2026-11-20 14:12:23.848335 UTC; coverage_through advances via PostgreSQL clock_timestamp(). No live error notification had arrived at the final verification time; no synthetic error was injected.
+- OMC historical import is complete: the source snapshot contained 17,170 Usage rows, 112 historical price versions and 156 error events. A post-import exact overlap reconciliation removed 42 successful rows that matched oracle-primary across timestamp, provider, model, status, auth_index and token buckets; five unmatched OMC-only rows from subscription gaps were retained. Final legacy Usage count is 17,128. Historical Usage and Error records share legacy-oh-my-cpa-default; live ingestion remains oracle-primary.
+- Historical Rollup was rebuilt with a 120-day daily lookback. After duplicate correction, the daily aggregate reconciles to 17,178 total requests (17,128 retained imported + 50 live), 2,764 errors (2,761 historical Usage errors + 3 live Usage errors) and 74,385,946,498 cost nanos.
+- The Records API was exercised against imported historical records: eventId 16021 returned one HTTP 400 credential/time-window-associated error at 1ms; eventId 17113 returned one HTTP 402 error at 652ms. Both had provider/model matches and historical_import coverage. auth_index and auth_id were not exposed. There are 703 historical candidate pairs after overlap correction.
+- Public entrypoint https://cpa-monitor.gjy666.eu.cc/login returned HTTP 200 through Cloudflare. Production deployment branch allowlist was temporarily extended for the cutover and then restored to main and feat/phase6-legacy-import.
 
 ## Operational commands
 
-Run from `/opt/cpa/monitor/deploy/compose` after the dedicated database, role, secrets and pinned image are provisioned:
+Run from /opt/cpa/monitor/deploy/compose for read-only operational checks:
 
 ```bash
-docker compose --env-file .env -f compose.yaml pull
-docker compose --env-file .env -f compose.yaml run --rm --no-deps web node scripts/migrate.mjs
-docker compose --env-file .env -f compose.yaml up -d web processor rollup
-docker compose --env-file .env -f compose.yaml ps
+docker compose --profile collector --profile error-collector --env-file .env -f compose.yaml ps
+docker exec cliproxyapi-monitor-collector node scripts/collector-health.mjs
+docker exec cliproxyapi-monitor-error-collector node scripts/error-collector-health.mjs
+curl -fsS http://127.0.0.1:15300/login >/dev/null
 ```
 
-The Collector is excluded from the default Compose profile. Keep it disabled until the dedicated Monitor database, backup/restore and production deployment are verified. At deployment, set `COLLECTOR_ENABLED=true`, `COLLECTOR_MODE=subscribe`, `COLLECTOR_ALLOW_PULL_FALLBACK=false`, `CPA_ALLOW_PRODUCTION_TARGET=true`, and `COLLECTOR_ALLOW_PRODUCTION_DATABASE=true` in `.env`, then run `docker compose --profile collector --env-file .env -f compose.yaml up -d collector`. OMC and Keeper remain active broadcast subscribers.
+For a new release, use the GitHub Actions CI CD workflow with deploy_production=true from a branch explicitly permitted by the production Environment. The installed deployment helper performs the database backup/restore rehearsal, reviewed migration, pinned-image rollout and health-gated rollback. Do not bypass the helper with an ad-hoc docker compose pull/up or drizzle-kit push. Usage and Error Collectors remain separate profiles and processes.
 
 ## Production safety invariants
 
@@ -53,21 +57,20 @@ The Collector is excluded from the default Compose profile. Keep it disabled unt
 - Back up the new Monitor database before migrations and before cutover.
 - Keep Cloudreve's existing database, role, data volume and Redis untouched.
 - Do not publish CPA port 8317 or change its bind address to make Docker networking easier.
+- CPA `management.secret-key` is stored as a bcrypt hash in `config.yaml`; RESP clients must use the corresponding plaintext management secret from a trusted existing client configuration, never copy the hash into `CPA_MANAGEMENT_KEY`. Keep the Monitor `.env` restricted to mode `0600`.
 - Prefer RESP subscription while OMC/Keeper remain active; all subscribers receive the broadcast. The stream is at-most-once with no replay, so every disconnect is recorded as a gap. Do not select FIFO pull while any other subscriber is active. The FIFO queue has a one-hour retention window and is not an unlimited outage buffer.
 - A pull interrupted after CPA LPOP but before Inbox commit is an explicit ingestion gap; do not describe this delivery boundary as lossless.
 - Keep Collector, Processor, Rollup and web database pools within the documented connection budget.
 
 ## Current status
 
-- [x] Phase 6 history import and source/target reconciliation.
-- [x] Phase 6 PostgreSQL 17 CI, import tests, lint, typecheck and Next build.
-- [x] Phase 7 PostgreSQL backend-failure reconnection and committed-Inbox process-restart tests.
-- [x] Phase 7 seven-day empty-pull audit retention, expired Processor lease reclamation and duplicate-event tests.
-- [x] Added a GitHub Actions PostgreSQL 17 container restart durability test.
-- [x] Phase 7 browser acceptance in GitHub Actions (login and Overview/Explore/Records pages; API errors and console errors checked).
-- [x] Phase 7 immutable Docker image build and container smoke test (GHCR image built and launched).
-- [ ] Provision dedicated Monitor database/role and validate backup/restore.
-- [x] Increase CPA queue retention from 300 seconds to the documented maximum of 3,600 seconds; config hot reload verified and original config backed up.
-- [ ] Deploy the Monitor Collector in `auto`/`subscribe` mode, verify the CPA SUBSCRIBE acknowledgement and event flow, then verify OMC/Keeper continue receiving the same broadcast. Do not disable their subscribers for this mode.
-- [ ] Use explicit `pull` mode only if SUBSCRIBE is unavailable and all other subscribers are confirmed stopped; then ensure exactly one FIFO consumer. CPAMP price synchronization may remain active if it does not consume the usage queue.
-- [ ] Verify live Collector health, Inbox drain, Processor, Rollup and Dashboard totals after cutover.
+- [x] Phase 6 historical Usage import and source/target reconciliation: 17,170 source rows, 42 exact live-overlap duplicates removed, 17,128 retained, 112/112 price versions, 0 skipped.
+- [x] Phase 5.5 Error Events import: 156/156 events, 0 skipped/failed, 156 reconciled.
+- [x] Historical Usage/Error same-instance credential/time-window correlation: 703 candidate pairs after overlap correction; production Records API smoke tests returned matching evidence without exposing credential identifiers.
+- [x] Phase 5.5 migration 0011 applied to PostgreSQL 17; pre-deploy backup and isolated restore test passed (22 public tables restored).
+- [x] Full GitHub Actions run 44750179409 succeeded for initial Phase 5.5 deployment; follow-up run 44759282422 also passed tests, PostgreSQL 17 restart durability, ARM64/AMD64 builds, multi-architecture manifest, image smoke test and Oracle production deployment.
+- [x] Production image sha-7f871e9 deployed. Web, Processor, Rollup, Usage Collector, Error Collector and PostgreSQL 17 are running; Web and both Collectors report healthy.
+- [x] Usage remains native RESP SUBSCRIBE; Error Collector independently subscribes to errors. No errors LPOP or Usage FIFO consumer was introduced. Usage capacityWarning is false; health reporting now excludes RESP SUBSCRIBE from FIFO full-batch counts.
+- [x] Daily Rollup backfill expanded to 120 days; 444 daily groups refreshed and totals reconciled to 17,178 requests, 2,764 errors (2,761 historical + 3 live) and 74,385,946,498 cost nanos.
+- [x] External login endpoint https://cpa-monitor.gjy666.eu.cc/login returns HTTP 200; Production deployment allowlist restored to its original two branches.
+- [ ] Observe the first naturally occurring live CPA errors notification and verify it is persisted under oracle-primary. The live errors subscription is healthy, but received_count remained zero at final verification; no synthetic production error was injected.

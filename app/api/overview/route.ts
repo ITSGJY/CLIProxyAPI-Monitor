@@ -21,8 +21,9 @@ const OVERVIEW_CACHE_TTL_MS = 30_000;
 const OVERVIEW_CACHE_MAX_ENTRIES = 100;
 const overviewCache = new Map<string, CachedOverview>();
 
-function makeCacheKey(input: { days?: number; model?: string | null; route?: string | null; source?: string | null; name?: string | null; page?: number; pageSize?: number; start?: string | null; end?: string | null; provider?: string | null; serviceTier?: string | null; status?: string | null; currency?: string | null }) {
+function makeCacheKey(input: { allTime?: boolean; days?: number; model?: string | null; route?: string | null; source?: string | null; name?: string | null; page?: number; pageSize?: number; start?: string | null; end?: string | null; provider?: string | null; serviceTier?: string | null; status?: string | null; currency?: string | null }) {
   return JSON.stringify({
+    allTime: input.allTime ?? false,
     days: input.days ?? null,
     model: input.model ?? null,
     route: input.route ?? null,
@@ -68,6 +69,8 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const daysParam = searchParams.get("days");
     const days = daysParam ? Number.parseInt(daysParam, 10) : undefined;
+    const allTimeParam = searchParams.get("all");
+    const allTime = allTimeParam === "1" || allTimeParam === "true";
     const model = searchParams.get("model");
     const route = searchParams.get("route");
     const source = searchParams.get("source");
@@ -87,7 +90,7 @@ export async function GET(request: Request) {
     const pageSize = pageSizeParam ? Number.parseInt(pageSizeParam, 10) : undefined;
     const skipCacheParam = searchParams.get("skipCache");
     const skipCache = skipCacheParam === "1" || skipCacheParam === "true";
-    const cacheKey = makeCacheKey({ days, model, route, source, name, page, pageSize, start, end, provider, serviceTier, status, currency });
+    const cacheKey = makeCacheKey({ allTime, days, model, route, source, name, page, pageSize, start, end, provider, serviceTier, status, currency });
     if (!skipCache) {
       const cached = getCached(cacheKey);
       if (cached) {
@@ -108,7 +111,8 @@ export async function GET(request: Request) {
       pageSize,
       start,
       end,
-      timezone: config.timezone
+      timezone: config.timezone,
+      allTime
     });
 
     const payload = { overview, empty, days: appliedDays, meta, filters, timezone, lastSyncAt, costByCurrency, pricingCoverage };

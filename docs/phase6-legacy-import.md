@@ -48,4 +48,16 @@ The daily/hourly rollups were rebuilt for `Asia/Shanghai`. The daily rollup tota
 
 ## Scope boundary
 
-This phase builds and validates the importer against an isolated PostgreSQL 17 database. It does not write to a production PostgreSQL endpoint, change OMC's SQLite database, enable the legacy Collector instance, or deploy the Monitor. Production target provisioning, final migration rehearsal and cutover remain Phase 7.
+The initial Phase 6 implementation and E2E validation used an isolated PostgreSQL 17 database. The subsequent production cutover was completed on 2026-11-20 as part of the Phase 5.5 deployment. The live OMC SQLite database remained read-only and was never modified.
+
+## Production cutover — 2026-11-20
+
+- Source: OMC v0.4.8, SQLite schema version 71. The SQLite Backup API snapshot was created read-only. The source snapshot was filtered at the latest CPA SUBSCRIBE usage acknowledgement (2026-11-19T22:30:43.759338Z, Unix ms 1795127443759) and contained 17,170 Usage rows, 112 price versions and 156 error events.
+- Live-overlap reconciliation used all recorded successful Usage subscription sessions beginning 2026-11-18T13:58:47.939374Z. Forty-two imported legacy rows were exact matches to oracle-primary records across timestamp, provider, model, status, auth_index and token buckets; these successful duplicates were removed transactionally. Five unmatched OMC rows after the first acknowledgement were retained as OMC-only observations from subscription gaps. Final retained historical Usage: 17,128 rows. The removed event IDs and reconciliation totals are recorded in usage_import_runs.manifest.live_overlap_reconciliation.
+- Imported snapshot: /var/backups/cliproxyapi-monitor/omc-phase55-handover-20261120.sqlite; SHA256 cc3a0de8160fa60248893fd9993e65697a3fffe4d96e6db00b6d41776d1e3083. Error events were not time-filtered because Monitor's independent errors subscription started only after this snapshot.
+- Production Usage import run 1: source rows 17,170, inserted 17,170, skipped 0; after overlap reconciliation, 17,128 legacy rows remain. Priced 3,290, unpriced 13,838; is_error 2,761; cost_nanos 74,385,946,498; source price versions 112; orphan source price refs 0; sensitive fields present 0.
+- Production Error import run 1: completed, expected/processed/reconciled 156, inserted 156, skipped 0, failed 0. Both historical Usage and Error events use source_instance_id legacy-oh-my-cpa-default; live CPA ingestion remains oracle-primary.
+- Rollup rebuilt with ROLLUP_DAILY_LOOKBACK_DAYS=120. Daily rollups refreshed 444 groups; request_count 17,178 including 50 live requests; error_count 2,764 (2,761 historical Usage errors + 3 live Usage errors); cost_nanos 74,385,946,498.
+- Correlation verification: 703 historical Usage/Error pairs satisfy same instance, same auth_index and ±120 seconds. Production Records detail API for eventId 16021 returned one associated HTTP 400 event with a 1ms delta; eventId 17113 returned one associated HTTP 402 event with a 652ms delta. Both showed provider/model matches and historical_import coverage, without auth_index/auth_id exposure.
+- Three OMC errors occurred after the first live Usage subscription acknowledgement. One correlates to a retained OMC-only gap event; two match only oracle-primary live records. They remain under legacy-oh-my-cpa-default so the system does not silently cross-correlate separate source_instance_id values.
+- The deployment and database backup/restore evidence is recorded in docs/phase5.5-cpa-error-events.md and docs/phase7-runbook.md.
