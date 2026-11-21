@@ -1085,7 +1085,11 @@ export default function DashboardPage() {
           }`}>
             <button
               type="button"
-              onClick={() => setAutoRefresh((v) => !v)}
+              onClick={() => {
+                const next = !autoRefresh;
+                setAutoRefresh(next);
+                if (next) refreshOverview("auto");
+              }}
               onMouseEnter={() => {
                 if (!autoRefresh) return;
                 const update = () => {
@@ -1130,6 +1134,7 @@ export default function DashboardPage() {
               }`}>
                 <select
                   value={refreshPreset}
+                  data-testid="auto-refresh-interval"
                   onChange={(e) => setRefreshPreset(e.target.value)}
                   className={`appearance-none py-1.5 pl-2 text-xs outline-none cursor-pointer ${
                     refreshPreset === "custom" ? "pr-4" : "pr-6"
@@ -1162,6 +1167,7 @@ export default function DashboardPage() {
                 <input
                   type="number"
                   min={customIntervalUnit === "m" ? "1" : "5"}
+                  data-testid="auto-refresh-custom-interval"
                   value={customIntervalInput}
                   onChange={(e) => setCustomIntervalInput(e.target.value)}
                   className={`w-14 py-1.5 pl-2 pr-1 text-xs outline-none flex-shrink-0 appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none ${

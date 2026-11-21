@@ -14,6 +14,13 @@ test("unauthenticated dashboard redirects to the login page", async ({ page }) =
   await page.goto("/");
   await expect(page).toHaveURL(/\/login\?/);
   await expect(page.getByPlaceholder("输入访问密码")).toBeVisible();
+  const workerAsset = await page.evaluate(async () => {
+    const response = await fetch("/auto-refresh-worker.js", { cache: "no-store" });
+    return { status: response.status, contentType: response.headers.get("content-type"), body: await response.text() };
+  });
+  expect(workerAsset.status).toBe(200);
+  expect(workerAsset.contentType || "").toMatch(/javascript/);
+  expect(workerAsset.body).toContain("postMessage");
   await expect(page.getByRole("link", { name: "CLIProxyAPI Monitor" })).toHaveAttribute(
     "href",
     "https://github.com/ITSGJY/CLIProxyAPI-Monitor"
@@ -102,8 +109,7 @@ test("login and all dashboard pages render with JSON API responses", async ({ pa
   const refreshedRecordsResponse = await recordsRefresh;
   expect(refreshedRecordsResponse.status()).toBe(200);
   expect(typeof (await refreshedRecordsResponse.json()).totalCount).toBe("number");
-  await expect(page.getByTestId("records-refresh-status")).toContainText(/新增 \d+ 条记录|暂无新增数据|当前筛选共 \d+ 条记录|减少 \d+ 条记录/);
-  await expect(page.getByTestId("records-refresh-status")).not.toContainText("刷新完成");
+  await expect(page.getByTestId("records-refresh-status")).toContainText(/新增 \d+ 条记录|暂无新增数据|当前筛选共 \d+ 条记录/);  await expect(page.getByTestId("records-refresh-status")).not.toContainText("刷新完成");
   expect(recordsRequests.length).toBeGreaterThanOrEqual(2);
   expect(syncRequests).toEqual([]);
   await Promise.all(apiTasks);
@@ -113,17 +119,16 @@ test("login and all dashboard pages render with JSON API responses", async ({ pa
 });
 
 test("dashboard manual and automatic refreshes show transient toast counts", async ({ page }) => {
-
-  await page.route("**/auto-refresh-worker.js", (route) => route.fulfill({
-    status: 200,
-    contentType: "application/javascript",
-    body: 'let timer; self.onmessage = (event) => { if (event.data?.type === "start") { clearTimeout(timer); timer = setTimeout(() => self.postMessage({ type: "tick" }), 25); } else if (event.data?.type === "stop") { clearTimeout(timer); } };'
-  }));
   let manualRefreshCount = 0;
+  let automaticRefreshCount = 0;
   await page.route("**/api/overview?*", (route) => {
     const url = new URL(route.request().url());
     const refreshSource = url.searchParams.get("refreshSource");
-    const totalRequests = refreshSource === "manual" ? (manualRefreshCount++ === 0 ? 103 : 105) : refreshSource === "auto" ? 108 : 100;
+    const totalRequests = refreshSource === "manual"
+      ? (manualRefreshCount++ === 0 ? 103 : 105)
+      : refreshSource === "auto"
+        ? (automaticRefreshCount++ === 0 ? 108 : 108)
+        : 100;
     return route.fulfill({
       status: 200,
       json: {
@@ -164,6 +169,7 @@ test("dashboard manual and automatic refreshes show transient toast counts", asy
   await login(page);
   expect((await initialOverview).status()).toBe(200);
   await expect(page.getByRole("heading", { name: "Usage Dashboard" })).toBeVisible();
+  await expect.poll(() => page.workers().some((worker) => new URL(worker.url()).pathname === "/auto-refresh-worker.js")).toBe(true);
   await expect(page.getByRole("button", { name: "刷新数据" })).toBeEnabled();
 
   const manualRefresh = page.waitForResponse((response) => {
@@ -177,14 +183,28 @@ test("dashboard manual and automatic refreshes show transient toast counts", asy
   await expect(page.getByTestId("dashboard-refresh-status")).not.toContainText("刷新完成");
   await expect(page.getByTestId("dashboard-refresh-summary")).toHaveCount(0);
 
-  const automaticRefresh = page.waitForResponse((response) => {
+  await page.getByTestId("auto-refresh-interval").selectOption("custom");
+  await page.getByTestId("auto-refresh-custom-interval").fill("5");
+
+  const immediateAutoRefresh = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return url.pathname === "/api/overview" && url.searchParams.get("refreshSource") === "auto";
   });
   await page.getByRole("button", { name: "自动刷新", exact: true }).click();
-  expect((await automaticRefresh).status()).toBe(200);
+  expect((await immediateAutoRefresh).status()).toBe(200);
   await expect(page.getByTestId("dashboard-refresh-status")).toContainText("新增 5 条请求");
+
+  const periodicAutoRefresh = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/overview" && url.searchParams.get("refreshSource") === "auto";
+  }, { timeout: 12000 });
+  expect((await periodicAutoRefresh).status()).toBe(200);
+  expect(automaticRefreshCount).toBe(2);
+  await expect(page.getByTestId("dashboard-refresh-status")).toContainText("暂无新增数据");
+
   await page.getByRole("button", { name: "自动刷新", exact: true }).click();
+  await page.waitForTimeout(5500);
+  expect(automaticRefreshCount).toBe(2);
 
   await expect(page.getByRole("button", { name: "刷新数据" })).toBeEnabled();
   const noNewDataRefresh = page.waitForResponse((response) => {
@@ -196,7 +216,6 @@ test("dashboard manual and automatic refreshes show transient toast counts", asy
   await expect(page.getByTestId("dashboard-refresh-status")).toContainText("暂无新增数据");
   await expect(page.getByTestId("dashboard-refresh-status")).toBeHidden({ timeout: 12000 });
 });
-
 test("records page exposes configurable event columns, request details and filtered exports", async ({ page }) => {
   const occurredAt = "2026-11-19T06:00:00.000Z";
   const summary = {

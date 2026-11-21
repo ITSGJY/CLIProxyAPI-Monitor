@@ -23,6 +23,7 @@ function isBypassedPath(pathname: string) {
   if (pathname.startsWith("/api/sync")) return true;
   if (pathname === "/favicon.ico") return true;
   if (pathname === "/cf-worker-sync.js") return true;
+  if (pathname === "/auto-refresh-worker.js") return true;
   return false;
 }
 
