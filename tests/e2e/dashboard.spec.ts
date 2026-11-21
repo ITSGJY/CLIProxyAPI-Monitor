@@ -118,7 +118,7 @@ test("dashboard refresh summary reports manual and automatic request-count chang
     contentType: "application/javascript",
     body: 'let timer; self.onmessage = (event) => { if (event.data?.type === "start") { clearTimeout(timer); timer = setTimeout(() => self.postMessage({ type: "tick" }), 25); } else if (event.data?.type === "stop") { clearTimeout(timer); } };'
   }));
-  await page.route("**/api/overview", (route) => {
+  await page.route("**/api/overview?*", (route) => {
     const url = new URL(route.request().url());
     const refreshSource = url.searchParams.get("refreshSource");
     const totalRequests = refreshSource === "manual" ? 103 : refreshSource === "auto" ? 108 : 100;
