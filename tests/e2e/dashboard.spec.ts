@@ -102,7 +102,8 @@ test("login and all dashboard pages render with JSON API responses", async ({ pa
   const refreshedRecordsResponse = await recordsRefresh;
   expect(refreshedRecordsResponse.status()).toBe(200);
   expect(typeof (await refreshedRecordsResponse.json()).totalCount).toBe("number");
-  await expect(page.getByTestId("records-refresh-status")).toContainText("刷新完成");
+  await expect(page.getByTestId("records-refresh-status")).toContainText(/新增 \d+ 条记录|暂无新增数据|当前筛选共 \d+ 条记录|减少 \d+ 条记录/);
+  await expect(page.getByTestId("records-refresh-status")).not.toContainText("刷新完成");
   expect(recordsRequests.length).toBeGreaterThanOrEqual(2);
   expect(syncRequests).toEqual([]);
   await Promise.all(apiTasks);
@@ -171,7 +172,8 @@ test("dashboard manual and automatic refreshes show transient toast counts", asy
   });
   await page.getByRole("button", { name: "刷新数据" }).click();
   expect((await manualRefresh).status()).toBe(200);
-  await expect(page.getByTestId("dashboard-refresh-status")).toContainText("手动刷新完成，新增 3 条请求");
+  await expect(page.getByTestId("dashboard-refresh-status")).toContainText("新增 3 条请求");
+  await expect(page.getByTestId("dashboard-refresh-status")).not.toContainText("刷新完成");
   await expect(page.getByTestId("dashboard-refresh-summary")).toHaveCount(0);
 
   const automaticRefresh = page.waitForResponse((response) => {
@@ -180,7 +182,7 @@ test("dashboard manual and automatic refreshes show transient toast counts", asy
   });
   await page.getByRole("button", { name: "自动刷新", exact: true }).click();
   expect((await automaticRefresh).status()).toBe(200);
-  await expect(page.getByTestId("dashboard-refresh-status")).toContainText("自动刷新完成，新增 5 条请求");
+  await expect(page.getByTestId("dashboard-refresh-status")).toContainText("新增 5 条请求");
   await page.getByRole("button", { name: "自动刷新", exact: true }).click();
 
   await expect(page.getByRole("button", { name: "刷新数据" })).toBeEnabled();
@@ -190,7 +192,7 @@ test("dashboard manual and automatic refreshes show transient toast counts", asy
   });
   await page.getByRole("button", { name: "刷新数据" }).click();
   expect((await noNewDataRefresh).status()).toBe(200);
-  await expect(page.getByTestId("dashboard-refresh-status")).toContainText("手动刷新完成，暂无新增数据");
+  await expect(page.getByTestId("dashboard-refresh-status")).toContainText("暂无新增数据");
   await expect(page.getByTestId("dashboard-refresh-status")).toBeHidden({ timeout: 12000 });
 });
 
@@ -349,7 +351,8 @@ test("records page exposes configurable event columns, request details and filte
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   expect((await refreshResponse).status()).toBe(200);
-  await expect(page.getByTestId("records-refresh-status")).toContainText("刷新完成，新增 3 条记录");
+  await expect(page.getByTestId("records-refresh-status")).toContainText("新增 3 条记录");
+  await expect(page.getByTestId("records-refresh-status")).not.toContainText("刷新完成");
 
   await expect(page.getByRole("button", { name: "刷新", exact: true })).toBeEnabled();
   const noNewRecordsRefresh = page.waitForResponse((response) => {
@@ -358,7 +361,7 @@ test("records page exposes configurable event columns, request details and filte
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   expect((await noNewRecordsRefresh).status()).toBe(200);
-  await expect(page.getByTestId("records-refresh-status")).toContainText("刷新完成，暂无新增数据");
+  await expect(page.getByTestId("records-refresh-status")).toContainText("暂无新增数据");
 
   await expect(page.getByRole("columnheader", { name: /Cache Read/ })).toBeVisible();
   await expect(page.getByRole("columnheader", { name: /Cache Write/ })).toBeVisible();

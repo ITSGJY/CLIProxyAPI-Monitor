@@ -692,14 +692,13 @@ export default function DashboardPage() {
         const previousSnapshot = lastOverviewCountRef.current;
         if (refreshRequest) {
           const delta = previousSnapshot?.filterKey === filterKey ? totalRequests - previousSnapshot.totalRequests : null;
-          const label = refreshRequest.source === "auto" ? "自动刷新完成" : "手动刷新完成";
           const message = delta === null
-            ? `${label}，当前共 ${formatNumberWithCommas(totalRequests)} 条请求`
+            ? `当前共 ${formatNumberWithCommas(totalRequests)} 条请求`
             : delta > 0
-              ? `${label}，新增 ${formatNumberWithCommas(delta)} 条请求`
+              ? `新增 ${formatNumberWithCommas(delta)} 条请求`
               : delta === 0
-                ? `${label}，暂无新增数据`
-                : `${label}，请求数减少 ${formatNumberWithCommas(Math.abs(delta))} 条`;
+                ? "暂无新增数据"
+                : `减少 ${formatNumberWithCommas(Math.abs(delta))} 条请求`;
           setRefreshStatus(message);
           setRefreshStatusClosing(false);
           if (refreshRequestRef.current?.id === refreshRequest.id) refreshRequestRef.current = null;

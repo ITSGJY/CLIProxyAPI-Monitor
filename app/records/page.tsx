@@ -679,12 +679,12 @@ export default function RecordsPage() {
           if (opts.trackRefresh) {
             const delta = previousTotal === null || totalRecordsFilterKeyRef.current !== filterKey ? null : data.totalCount - previousTotal;
             setRefreshStatus(delta === null
-              ? `刷新完成，当前筛选共 ${formatNumberWithCommas(data.totalCount)} 条记录`
+              ? `当前筛选共 ${formatNumberWithCommas(data.totalCount)} 条记录`
               : delta > 0
-                ? `刷新完成，新增 ${formatNumberWithCommas(delta)} 条记录`
+                ? `新增 ${formatNumberWithCommas(delta)} 条记录`
                 : delta === 0
-                  ? "刷新完成，暂无新增数据"
-                  : `刷新完成，记录数减少 ${formatNumberWithCommas(Math.abs(delta))} 条`);
+                  ? "暂无新增数据"
+                  : `减少 ${formatNumberWithCommas(Math.abs(delta))} 条记录`);
             setRefreshStatusClosing(false);
           }
           totalRecordsRef.current = data.totalCount;
