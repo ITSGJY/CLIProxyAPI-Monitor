@@ -13,3 +13,4 @@ pnpm-debug.log*
 bun.lockb
 .drizzle
 tsconfig.tsbuildinfo
+/public/lobe-icons/

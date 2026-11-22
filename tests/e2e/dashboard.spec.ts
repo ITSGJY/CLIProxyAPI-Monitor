@@ -514,6 +514,32 @@ test("records page exposes configurable event columns, request details and filte
   await expect(recordRow).toContainText("208.33 t/s");
   await expect(recordRow).toContainText("40.0%");
   await expect(recordRow).toContainText("****1234");
+  const providerMark = recordRow.getByTestId("provider-brand-mark");
+  await expect(providerMark).toHaveAttribute("data-icon-id", "OpenAI");
+  await expect(providerMark.locator("span")).toHaveAttribute("style", /openai\.svg/);
+  const modelMark = recordRow.getByTestId("model-brand-mark");
+  await expect(modelMark).toHaveAttribute("data-icon-id", "OpenAI");
+  await expect(modelMark.locator("span")).toHaveAttribute("style", /openai\.svg/);
+
+  const originalProvider = summary.provider;
+  const originalModel = summary.model;
+  summary.provider = "codex";
+  summary.model = "gpt-6-codex";
+  await page.reload();
+  const codexRow = page.getByRole("row", { name: "查看请求详情：req-e2e-001" });
+  const codexProviderMark = codexRow.getByTestId("provider-brand-mark");
+  await expect(codexRow).toContainText("Codex");
+  await expect(codexProviderMark).toHaveAttribute("data-icon-id", "Codex");
+  await expect(codexProviderMark.locator("img")).toHaveAttribute("src", /\/lobe-icons\/codex-color\.svg$/);
+  await expect.poll(() => codexProviderMark.locator("img").evaluate((image) => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0)).toBe(true);
+  const codexModelMark = codexRow.getByTestId("model-brand-mark");
+  await expect(codexModelMark).toHaveAttribute("data-icon-id", "Codex");
+  await expect(codexModelMark.locator("img")).toHaveAttribute("src", /\/lobe-icons\/codex-color\.svg$/);
+  await expect.poll(() => codexModelMark.locator("img").evaluate((image) => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0)).toBe(true);
+  summary.provider = originalProvider;
+  summary.model = originalModel;
+  await page.reload();
+
   await expect.poll(() => page.evaluate(() => localStorage.getItem("records-column-settings-v5") !== null)).toBe(true);
   const migratedWidths = await page.evaluate(() => {
     const columns = JSON.parse(localStorage.getItem("records-column-settings-v5") || "[]");
