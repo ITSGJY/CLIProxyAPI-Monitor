@@ -9,6 +9,7 @@ Upgrade `/records` into a request-event analysis workspace while retaining Monit
 - Configurable event columns: show/hide, drag reorder, resize, and browser-local persistence.
 - Column preferences use `records-column-settings-v5`; the page migrates the prior v4 compact default to the OMC-aligned layout, while preserving explicit custom column choices and older v2/v3 preferences.
 - The default 12-column layout follows the supplied OMC `usage/events` row: request time with Request ID, result, provider brand/Auth Type/credential, model, reasoning mode, TPS, latency with TTFT, total/input/output/reasoning tokens, cost, cache-hit rate, masked Key and a dedicated detail affordance. Session ID, Parent Session ID, Execution ID, Trace ID, Node Kind, Fork and Compaction remain configurable.
+- Provider and model marks reuse OMC v0.4.11 provider identity/model manufacturer resolution and its LobeHub icon catalog. `@lobehub/icons-static-svg` is pinned to 1.95.1 and synchronized to local `public/lobe-icons/` before dev/build; runtime image requests stay same-origin and do not depend on a third-party image host.
 - Clicking a row opens a detail drawer. The drawer loads the full event only when requested rather than adding large diagnostic payloads to every list response.
 - Detail sections cover routing, model resolution, reasoning/service tiers, token accounting, execution/session context, pricing, error details, sanitized response headers and sanitized raw payload.
 

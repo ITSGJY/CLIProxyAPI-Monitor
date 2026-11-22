@@ -4,6 +4,7 @@
 
 - `/records` 请求事件列表参照 OMC v0.4.9 的阅读层级和紧凑行布局：默认仅显示 10 个核心字段，时间/状态/Provider/模型突出，模式、耗时与 TTFT、Token 总量与输入/输出/思考、费用、缓存、API Key/凭证两行聚合；行背景交替而非卡片堆叠。窄屏改为可点击的记录卡片。保留列拖拽排序、宽度调整、筛选、导出及详情抽屉，并提供「恢复简洁布局」。已保存的旧版默认列迁移为简洁布局，自定义列配置继续保留。
 - 修正 `/records` 默认表格布局，严格按用户提供的 OMC `usage/events` 截图调整为 12 列：请求时间（含 Request ID）、结果、提供商（品牌标识/Auth Type/凭证）、模型、推理模式、TPS、耗时/TTFT、Token 消耗明细、费用、缓存率、脱敏 Key、详情入口。TPS 与缓存率复用详情抽屉的统一计算逻辑；旧版未自定义的 10 列默认布局升级为新布局，明确自定义列配置继续保留。
+- `/records` Provider/Model 品牌图标改为复用 OMC v0.4.11 的 provider identity、model manufacturer 识别规则与 LobeHub SVG catalog；锁定 `@lobehub/icons-static-svg` 1.95.1，在开发启动和生产构建时生成本地 `/lobe-icons/` 资源，不依赖第三方图片服务器，并增加 OpenAI/Codex 图标浏览器验收。
 
 ## 2026-11-21
 

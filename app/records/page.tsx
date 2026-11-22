@@ -12,6 +12,10 @@ import {
 } from "react";
 import { ArrowDown, ArrowUp, RefreshCw, SlidersHorizontal, X, CalendarRange, Columns3, GripVertical, Download, FileJson, Search, ChevronRight, Lightbulb } from "lucide-react";
 import RecordDetailsDrawer from "@/app/components/RecordDetailsDrawer";
+import { OmcBrandIcon } from "@/app/components/OmcBrandIcon";
+import { modelMarkIconId } from "@/lib/branding/omc/modelMark";
+import { resolveProviderIcon } from "@/lib/branding/omc/providerIconIds";
+import { providerDisplayName } from "@/lib/branding/omc/providerMetadata";
 import { formatNumberWithCommas } from "@/lib/utils";
 import { calculateCacheRate, calculateOutputRate } from "@/lib/records/metrics";
 import { DayPicker, type DateRange } from "react-day-picker";
@@ -401,29 +405,8 @@ function formatRequestTimestamp(value: string): string {
     pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
 }
 
-function providerMark(provider: string | null): string {
-  const value = (provider || "").trim().toLowerCase();
-  if (value.includes("xai") || value.includes("grok")) return "𝕏";
-  if (value.includes("openai") || value.includes("codex")) return "◎";
-  if (value.includes("anthropic") || value.includes("claude")) return "A";
-  if (value.includes("google") || value.includes("gemini") || value.includes("vertex")) return "G";
-  if (value.includes("deepseek")) return "D";
-  if (value.includes("openrouter")) return "O";
-  if (value.includes("moonshot") || value.includes("kimi")) return "K";
-  if (value.includes("qwen") || value.includes("aliyun")) return "Q";
-  return (provider || "?").trim().slice(0, 1).toUpperCase() || "?";
-}
-
 function providerLabel(provider: string | null): string {
-  const value = (provider || "").trim();
-  const normalized = value.toLowerCase();
-  if (normalized === "xai") return "xAI";
-  if (normalized === "openai") return "OpenAI";
-  if (normalized === "anthropic") return "Anthropic";
-  if (normalized === "google") return "Google";
-  if (normalized === "deepseek") return "DeepSeek";
-  if (normalized === "openrouter") return "OpenRouter";
-  return value || "—";
+  return provider?.trim() ? providerDisplayName(provider) : "—";
 }
 
 function authTypeLabel(authType: string | null): string {
@@ -1023,44 +1006,7 @@ export default function RecordsPage() {
       : "bg-sky-500/20 text-sky-200 ring-1 ring-sky-500/40";
   }, []);
 
-  const providerTone = useCallback((provider: string | null) => {
-    const val = (provider || "").trim().toLowerCase();
 
-    // 指定 provider（无视大小写）
-    if (val.includes("geminicli") || val.includes("gemini")) {
-      return "bg-indigo-500/20 text-indigo-200 ring-1 ring-indigo-500/40";
-    }
-    if (val.includes("vertex")) return "bg-sky-500/20 text-sky-200 ring-1 ring-sky-500/40";
-    if (val.includes("aistudio") || val.includes("ai studio")) {
-      return "bg-cyan-500/20 text-cyan-200 ring-1 ring-cyan-500/40";
-    }
-    if (val.includes("antigravity")) {
-      return "bg-fuchsia-500/20 text-fuchsia-200 ring-1 ring-fuchsia-500/40";
-    }
-    if (val.includes("claude") || val.includes("anthropic")) {
-      return "bg-orange-500/20 text-orange-200 ring-1 ring-orange-500/40";
-    }
-    if (val.includes("codex") || val.includes("openai")) {
-      return "bg-emerald-500/20 text-emerald-200 ring-1 ring-emerald-500/40";
-    }
-    if (val.includes("qwen") || val.includes("aliyun") || val.includes("dashscope")) {
-      return "bg-amber-500/20 text-amber-200 ring-1 ring-amber-500/40";
-    }
-    if (val.includes("kimi") || val.includes("moonshot")) {
-      return "bg-rose-500/20 text-rose-200 ring-1 ring-rose-500/40";
-    }
-    if (val.includes("iflow") || val.includes("i-flow")) {
-      return "bg-lime-500/20 text-lime-200 ring-1 ring-lime-500/40";
-    }
-
-    // 兼容历史 provider
-    if (val.includes("openrouter")) return "bg-violet-500/20 text-violet-200 ring-1 ring-violet-500/40";
-    if (val.includes("google")) return "bg-blue-500/20 text-blue-200 ring-1 ring-blue-500/40";
-    if (val.includes("azure")) return "bg-cyan-500/20 text-cyan-200 ring-1 ring-cyan-500/40";
-    if (val.includes("deepseek")) return "bg-indigo-500/20 text-indigo-200 ring-1 ring-indigo-500/40";
-    if (val.includes("xai") || val.includes("grok")) return "bg-purple-500/20 text-purple-200 ring-1 ring-purple-500/40";
-    return "bg-slate-700/60 text-slate-300 ring-1 ring-slate-600";
-  }, []);
 
   const renderHeaderByColumn = useCallback(
     (columnKey: ColumnKey) => {
@@ -1117,15 +1063,12 @@ export default function RecordsPage() {
             </span>
           );
         case "provider": {
-          const normalizedProvider = (row.provider || "").toLowerCase();
-          const logoClass = normalizedProvider.includes("xai") || normalizedProvider.includes("grok")
-            ? "bg-white text-slate-950"
-            : providerTone(row.provider);
+          const iconId = resolveProviderIcon(row.provider || "", providerLabel(row.provider));
           const authLabel = authTypeLabel(row.authType);
           return (
             <div className="flex min-w-0 items-center gap-3">
-              <span className={"flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-xl font-semibold " + logoClass} aria-hidden="true">
-                {providerMark(row.provider)}
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-800/70 ring-1 ring-slate-700/70">
+                <OmcBrandIcon iconId={iconId} size={26} className="text-slate-300" testId="provider-brand-mark" fallback="server" />
               </span>
               <div className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
@@ -1137,10 +1080,14 @@ export default function RecordsPage() {
             </div>
           );
         }
-        case "model":
+        case "model": {
+          const iconId = modelMarkIconId(row.model, row.responseModel || row.modelAlias || "");
           return (
             <div className="min-w-0 max-w-full" title={row.model}>
-              <div className="truncate text-[13px] font-semibold text-slate-100">{row.model}</div>
+              <div className="flex min-w-0 items-center gap-2">
+                <OmcBrandIcon iconId={iconId} size={18} className="text-slate-400" testId="model-brand-mark" fallback="box" />
+                <span className="truncate text-[13px] font-semibold text-slate-100">{row.model}</span>
+              </div>
               {row.modelSubstituted && row.responseModel && row.responseModel !== row.model ? (
                 <div className="truncate text-[11px] text-indigo-300" title={"响应模型：" + row.responseModel}>
                   {"↳ " + row.responseModel}
@@ -1152,6 +1099,7 @@ export default function RecordsPage() {
               ) : null}
             </div>
           );
+        }
         case "requestMode": {
           const effort = reasoningEffortLabel(row.reasoningEffort);
           return effort
@@ -1256,7 +1204,7 @@ export default function RecordsPage() {
           return null;
       }
     },
-    [providerTone]
+    []
   );
   const filterSummary = useMemo(() => {
     const parts: string[] = [];
