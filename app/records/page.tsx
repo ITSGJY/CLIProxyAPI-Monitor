@@ -10,9 +10,10 @@ import {
   type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent
 } from "react";
-import { ArrowDown, ArrowUp, RefreshCw, SlidersHorizontal, X, CalendarRange, Columns3, GripVertical, Download, FileJson, Search, ChevronRight } from "lucide-react";
+import { ArrowDown, ArrowUp, RefreshCw, SlidersHorizontal, X, CalendarRange, Columns3, GripVertical, Download, FileJson, Search, ChevronRight, Lightbulb } from "lucide-react";
 import RecordDetailsDrawer from "@/app/components/RecordDetailsDrawer";
 import { formatNumberWithCommas } from "@/lib/utils";
+import { calculateCacheRate, calculateOutputRate } from "@/lib/records/metrics";
 import { DayPicker, type DateRange } from "react-day-picker";
 import "react-day-picker/dist/style.css";
 import { useAutoRefresh } from "@/app/components/AutoRefreshContext";
@@ -63,6 +64,7 @@ type UsageRecord = {
   costNanos: number | null;
   costCurrency: string;
   pricingStatus: string;
+  accountingStatus: string | null;
 };
 
 type RecordsResponse = {
@@ -94,7 +96,7 @@ type ColumnKey =
   | "outputTokens" | "reasoningTokens" | "cachedTokens" | "cacheReadTokens"
   | "cacheCreationTokens" | "latencyMs" | "ttftMs" | "statusCode" | "cost"
   | "sessionId" | "parentSessionId" | "executionId" | "traceId" | "nodeKind" | "isFork" | "isCompaction"
-  | "requestMode" | "cacheSummary";
+  | "requestMode" | "cacheSummary" | "outputRate" | "cacheRate" | "details";
 type ColumnSetting = {
   key: ColumnKey;
   visible: boolean;
@@ -138,13 +140,13 @@ const EMPTY_ADVANCED_FILTERS: AdvancedFilters = {
 };
 
 const PAGE_SIZE = 60;
-const COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v4";
-const LEGACY_COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v3";
-const OLDER_COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v2";
-// v3 default layout is used only to tell untouched settings apart from explicit preferences.
+const COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v5";
+const LEGACY_COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v4";
+const OLDER_COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v3";
+const OLDEST_COLUMN_SETTINGS_STORAGE_KEY = "records-column-settings-v2";
 const LEGACY_DEFAULT_COLUMN_ORDER: ColumnKey[] = [
   "occurredAt", "isError", "provider", "model", "requestId", "sessionId", "parentSessionId", "executionId", "traceId",
-  "nodeKind", "isFork", "isCompaction", "route", "credentialName", "totalTokens", "inputTokens", "outputTokens", "reasoningTokens", "cacheReadTokens",  "cacheCreationTokens", "latencyMs", "ttftMs", "cost", "modelAlias", "responseModel",
+  "nodeKind", "isFork", "isCompaction", "route", "credentialName", "totalTokens", "inputTokens", "outputTokens", "reasoningTokens", "cacheReadTokens", "cacheCreationTokens", "latencyMs", "ttftMs", "cost", "modelAlias", "responseModel",
   "apiGroupLabel", "endpoint", "authType", "executorType", "accessProvider", "isNativeKey",
   "reasoningEffort", "serviceTier", "stream", "generate", "modelSubstituted",
   "cachedTokens", "statusCode"
@@ -154,27 +156,38 @@ const LEGACY_DEFAULT_VISIBLE_COLUMNS = new Set<ColumnKey>([
   "totalTokens", "inputTokens", "outputTokens", "reasoningTokens", "cacheReadTokens",
   "cacheCreationTokens", "latencyMs", "ttftMs", "cost"
 ]);
-// Follow OMC's reading order: identity, performance, accounting, caller.
-// The full detailed columns remain in the column chooser and details drawer.
-const COMPACT_COLUMN_ORDER: ColumnKey[] = [
+const PREVIOUS_COMPACT_COLUMN_ORDER: ColumnKey[] = [
   "occurredAt", "isError", "provider", "model", "requestMode", "latencyMs",
   "totalTokens", "cost", "cacheSummary", "route"
 ];
+// OMC usage/events row layout: identity, result, provider, model, mode, performance,
+// token accounting, cost, cache hit rate, masked key, and a dedicated detail affordance.
+const COMPACT_COLUMN_ORDER: ColumnKey[] = [
+  "occurredAt", "isError", "provider", "model", "requestMode", "outputRate",
+  "latencyMs", "totalTokens", "cost", "cacheRate", "route", "details"
+];
 const DEFAULT_COLUMN_ORDER: ColumnKey[] = [
   ...COMPACT_COLUMN_ORDER,
-  ...LEGACY_DEFAULT_COLUMN_ORDER.filter((key) => !COMPACT_COLUMN_ORDER.includes(key))
+  ...LEGACY_DEFAULT_COLUMN_ORDER.filter((key) => !COMPACT_COLUMN_ORDER.includes(key)),
+  "cacheSummary"
 ];
 const DEFAULT_VISIBLE_COLUMNS = new Set<ColumnKey>(COMPACT_COLUMN_ORDER);
 const COLUMN_LABELS: Record<ColumnKey, string> = {
-  occurredAt: "时间",
-  isError: "状态",
+  occurredAt: "请求时间",
+  isError: "结果",
   provider: "提供商",
   model: "模型",
   requestMode: "模式",
+  outputRate: "TPS",
+  latencyMs: "耗时",
+  totalTokens: "消耗",
+  cost: "费用",
+  cacheRate: "缓存率",
+  route: "Key",
+  details: "详情",
   modelAlias: "模型别名",
   responseModel: "响应模型",
   requestId: "Request ID",
-  route: "API Key",
   credentialName: "凭证",
   apiGroupLabel: "API Group",
   endpoint: "Endpoint",
@@ -187,17 +200,15 @@ const COLUMN_LABELS: Record<ColumnKey, string> = {
   stream: "Stream",
   generate: "Generate",
   modelSubstituted: "模型替换",
-  totalTokens: "总 Tokens",
   inputTokens: "输入",
   outputTokens: "输出",
   reasoningTokens: "思考",
   cachedTokens: "Cached",
   cacheReadTokens: "Cache Read",
-  cacheSummary: "缓存",
+  cacheSummary: "缓存明细",
   cacheCreationTokens: "Cache Write",
-  latencyMs: "Latency",
   ttftMs: "TTFT",
-  statusCode: "HTTP 状态码",  cost: "费用",
+  statusCode: "HTTP 状态码",
   sessionId: "Session ID",
   parentSessionId: "Parent Session ID",
   executionId: "Execution ID",
@@ -208,31 +219,32 @@ const COLUMN_LABELS: Record<ColumnKey, string> = {
 };
 
 const DEFAULT_COLUMN_WIDTHS: Record<ColumnKey, number> = {
-  occurredAt: 122, isError: 76, provider: 148, model: 218, requestMode: 90, modelAlias: 160,
-  responseModel: 180, requestId: 220, route: 150, credentialName: 180,
+  occurredAt: 178, isError: 92, provider: 292, model: 252, requestMode: 112,
+  outputRate: 112, latencyMs: 132, totalTokens: 188, cost: 94, cacheRate: 96, route: 190, details: 44,
+  modelAlias: 160, responseModel: 180, requestId: 220, credentialName: 180,
   apiGroupLabel: 140, endpoint: 210, authType: 120, executorType: 130,
   accessProvider: 140, isNativeKey: 105, reasoningEffort: 130, serviceTier: 130,
-  stream: 90, generate: 95, modelSubstituted: 105, totalTokens: 154,
-  inputTokens: 95, outputTokens: 95, reasoningTokens: 105, cachedTokens: 100,
-  cacheReadTokens: 110, cacheCreationTokens: 115, cacheSummary: 90, latencyMs: 102, ttftMs: 95,
-  statusCode: 110, cost: 98,
+  stream: 90, generate: 95, modelSubstituted: 105, inputTokens: 95, outputTokens: 95,
+  reasoningTokens: 105, cachedTokens: 100, cacheReadTokens: 110, cacheCreationTokens: 115,
+  cacheSummary: 110, ttftMs: 95, statusCode: 110,
   sessionId: 190, parentSessionId: 190, executionId: 190, traceId: 190,
   nodeKind: 120, isFork: 90, isCompaction: 110
 };
 
 const FIXED_WIDTH_COLUMNS = new Set<ColumnKey>(DEFAULT_COLUMN_ORDER.filter((key) => key !== "provider" && key !== "model"));
 const COLUMN_MIN_WIDTH = 80;
+const COLUMN_MIN_WIDTHS: Partial<Record<ColumnKey, number>> = { details: 44 };
 const COLUMN_MAX_WIDTH = 420;
 
 const NON_FIXED_CONTENT_MIN_WIDTHS: Record<ColumnKey, number> = {
-  occurredAt: 120, isError: 76, provider: 136, model: 190, requestMode: 85, modelAlias: 130,
-  responseModel: 150, requestId: 180, route: 150, credentialName: 150,
+  occurredAt: 150, isError: 84, provider: 250, model: 190, requestMode: 96,
+  outputRate: 96, latencyMs: 112, totalTokens: 160, cost: 88, cacheRate: 88, route: 160, details: 44,
+  modelAlias: 130, responseModel: 150, requestId: 180, credentialName: 150,
   apiGroupLabel: 120, endpoint: 150, authType: 100, executorType: 110,
   accessProvider: 120, isNativeKey: 95, reasoningEffort: 110, serviceTier: 110,
-  stream: 80, generate: 85, modelSubstituted: 95, totalTokens: 105,
-  inputTokens: 96, outputTokens: 96, reasoningTokens: 96, cachedTokens: 90,
-  cacheReadTokens: 100, cacheCreationTokens: 105, cacheSummary: 90, latencyMs: 100, ttftMs: 90,
-  statusCode: 95, cost: 105,
+  stream: 80, generate: 85, modelSubstituted: 95, inputTokens: 96, outputTokens: 96,
+  reasoningTokens: 96, cachedTokens: 90, cacheReadTokens: 100, cacheCreationTokens: 105,
+  cacheSummary: 100, ttftMs: 90, statusCode: 95,
   sessionId: 170, parentSessionId: 170, executionId: 170, traceId: 170,
   nodeKind: 110, isFork: 80, isCompaction: 95
 };
@@ -273,6 +285,29 @@ function isUntouchedLegacyColumnLayout(raw: unknown): boolean {
   );
 }
 
+function isUntouchedPreviousCompactLayout(raw: unknown): raw is Array<{ key: ColumnKey; visible: boolean; width?: number | null }> {
+  if (!Array.isArray(raw)) return false;
+  const visible = raw
+    .filter((item: { visible?: unknown }) => item?.visible !== false)
+    .map((item: { key?: unknown }) => item?.key);
+  return JSON.stringify(visible) === JSON.stringify(PREVIOUS_COMPACT_COLUMN_ORDER);
+}
+
+function migratePreviousCompactLayout(raw: unknown): ColumnSetting[] {
+  const previous = Array.isArray(raw)
+    ? new Map((raw as Array<{ key?: unknown; width?: unknown }>).map((item) => [item.key, item.width]))
+    : new Map<unknown, unknown>();
+  return defaultColumnSettings().map((column) => {
+    const previousWidth = previous.get(column.key);
+    const parsedWidth = previousWidth === null || previousWidth === undefined || previousWidth === ""
+      ? Number.NaN
+      : Number(previousWidth);
+    return Number.isFinite(parsedWidth)
+      ? { ...column, width: Math.min(COLUMN_MAX_WIDTH, Math.max(COLUMN_MIN_WIDTHS[column.key] ?? COLUMN_MIN_WIDTH, Math.round(parsedWidth))) }
+      : column;
+  });
+}
+
 function defaultColumnSettings(): ColumnSetting[] {
   return DEFAULT_COLUMN_ORDER.map((key) => ({
     key,
@@ -288,8 +323,9 @@ function normalizeColumnSettings(raw: unknown): ColumnSetting[] {
 
   const seen = new Set<ColumnKey>();
   const input = raw as Array<{ key?: unknown; visible?: unknown; width?: unknown }>;
-  // A customized v3/v2 layout must not grow two surprise visible columns on upgrade.
+  // Older preference documents must not gain newly introduced default columns unexpectedly.
   const oldLayout = !input.some((item) => item?.key === "requestMode" || item?.key === "cacheSummary");
+  const preV5Layout = !input.some((item) => item?.key === "outputRate" || item?.key === "cacheRate" || item?.key === "details");
   const ordered: ColumnSetting[] = [];
 
   for (const item of input) {
@@ -299,7 +335,7 @@ function normalizeColumnSettings(raw: unknown): ColumnSetting[] {
     seen.add(key as ColumnKey);
     const parsedWidth = item?.width === null || item?.width === undefined ? Number.NaN : Number(item.width);
     const width = Number.isFinite(parsedWidth)
-      ? Math.min(COLUMN_MAX_WIDTH, Math.max(COLUMN_MIN_WIDTH, Math.round(parsedWidth)))
+      ? Math.min(COLUMN_MAX_WIDTH, Math.max(COLUMN_MIN_WIDTHS[key as ColumnKey] ?? COLUMN_MIN_WIDTH, Math.round(parsedWidth)))
       : FIXED_WIDTH_COLUMNS.has(key as ColumnKey)
         ? DEFAULT_COLUMN_WIDTHS[key as ColumnKey]
         : null;
@@ -308,7 +344,7 @@ function normalizeColumnSettings(raw: unknown): ColumnSetting[] {
 
   for (const key of DEFAULT_COLUMN_ORDER) {
     if (!seen.has(key)) {
-      ordered.push({ key, visible: DEFAULT_VISIBLE_COLUMNS.has(key) && !(oldLayout && (key === "requestMode" || key === "cacheSummary")), width: FIXED_WIDTH_COLUMNS.has(key) ? DEFAULT_COLUMN_WIDTHS[key] : null });
+      ordered.push({ key, visible: DEFAULT_VISIBLE_COLUMNS.has(key) && !(oldLayout && (key === "requestMode" || key === "cacheSummary")) && !(preV5Layout && (key === "outputRate" || key === "cacheRate" || key === "details")), width: FIXED_WIDTH_COLUMNS.has(key) ? DEFAULT_COLUMN_WIDTHS[key] : null });
     }
   }
   return ordered;
@@ -321,9 +357,9 @@ const TOKEN_COLORS = {
   cached: "#c084fc"
 };
 const RIGHT_ALIGNED_COLUMNS = new Set<ColumnKey>([
-  "latencyMs", "ttftMs", "totalTokens", "inputTokens", "outputTokens",
+  "outputRate", "latencyMs", "ttftMs", "totalTokens", "inputTokens", "outputTokens",
   "reasoningTokens", "cachedTokens", "cacheSummary", "cacheReadTokens",
-  "cacheCreationTokens", "cost", "statusCode"
+  "cacheCreationTokens", "cost", "cacheRate", "statusCode"
 ]);
 
 function formatTimestamp(ts: string) {
@@ -354,6 +390,56 @@ function formatCompactTokens(value: number): string {
 function formatDuration(value: number | null): string {
   if (value === null) return "—";
   return value >= 1000 ? (value / 1000).toFixed(value >= 10000 ? 1 : 2) + " s" : Math.round(value) + " ms";
+}
+
+function formatRequestTimestamp(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "—";
+  const pad = (part: number) => String(part).padStart(2, "0");
+  const year = date.getFullYear() === new Date().getFullYear() ? "" : pad(date.getFullYear() % 100) + "-";
+  return year + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + " " +
+    pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+}
+
+function providerMark(provider: string | null): string {
+  const value = (provider || "").trim().toLowerCase();
+  if (value.includes("xai") || value.includes("grok")) return "𝕏";
+  if (value.includes("openai") || value.includes("codex")) return "◎";
+  if (value.includes("anthropic") || value.includes("claude")) return "A";
+  if (value.includes("google") || value.includes("gemini") || value.includes("vertex")) return "G";
+  if (value.includes("deepseek")) return "D";
+  if (value.includes("openrouter")) return "O";
+  if (value.includes("moonshot") || value.includes("kimi")) return "K";
+  if (value.includes("qwen") || value.includes("aliyun")) return "Q";
+  return (provider || "?").trim().slice(0, 1).toUpperCase() || "?";
+}
+
+function providerLabel(provider: string | null): string {
+  const value = (provider || "").trim();
+  const normalized = value.toLowerCase();
+  if (normalized === "xai") return "xAI";
+  if (normalized === "openai") return "OpenAI";
+  if (normalized === "anthropic") return "Anthropic";
+  if (normalized === "google") return "Google";
+  if (normalized === "deepseek") return "DeepSeek";
+  if (normalized === "openrouter") return "OpenRouter";
+  return value || "—";
+}
+
+function authTypeLabel(authType: string | null): string {
+  const value = (authType || "").trim();
+  if (!value) return "";
+  const normalized = value.toLowerCase().replace(/[_-]+/g, " ");
+  if (normalized === "oauth") return "OAuth";
+  if (normalized === "api key" || normalized === "apikey") return "API Key";
+  return normalized.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function reasoningEffortLabel(value: string | null): string {
+  const normalized = (value || "").trim();
+  if (!normalized) return "";
+  if (normalized.toLowerCase().replace(/[-_\s]/g, "") === "xhigh") return "xHigh";
+  return normalized;
 }
 
 function formatDateInput(date: Date) {
@@ -551,7 +637,7 @@ export default function RecordsPage() {
   }, []);
 
   const setColumnWidth = useCallback((key: ColumnKey, width: number) => {
-    const nextWidth = Math.min(COLUMN_MAX_WIDTH, Math.max(COLUMN_MIN_WIDTH, Math.round(width)));
+    const nextWidth = Math.min(COLUMN_MAX_WIDTH, Math.max(COLUMN_MIN_WIDTHS[key] ?? COLUMN_MIN_WIDTH, Math.round(width)));
     setColumnSettings((prev) => prev.map((item) => (item.key === key ? { ...item, width: nextWidth } : item)));
   }, []);
 
@@ -978,6 +1064,7 @@ export default function RecordsPage() {
 
   const renderHeaderByColumn = useCallback(
     (columnKey: ColumnKey) => {
+      if (columnKey === "details") return <span className="sr-only">详情</span>;
       const sortTarget = SORT_FIELD_BY_COLUMN[columnKey];
       if (!sortTarget) {
         return <span className="font-semibold text-slate-300">{COLUMN_LABELS[columnKey]}</span>;
@@ -1014,28 +1101,42 @@ export default function RecordsPage() {
 
       switch (columnKey) {
         case "occurredAt": {
-          const timestamp = formatTimestamp(row.occurredAt);
-          const splitAt = timestamp.lastIndexOf(" ");
+          const timestamp = formatRequestTimestamp(row.occurredAt);
           return (
-            <time dateTime={row.occurredAt} title={timestamp} className="block min-w-0 tabular-nums">
-              <span className="block text-xs font-medium text-slate-100">{splitAt < 0 ? timestamp : timestamp.slice(0, splitAt)}</span>
-              {splitAt >= 0 ? <span className="block text-[11px] text-slate-500">{timestamp.slice(splitAt + 1)}</span> : null}
-            </time>
+            <div className="min-w-0 tabular-nums" title={timestamp}>
+              <time dateTime={row.occurredAt} className="block whitespace-nowrap text-[13px] font-medium text-slate-100">{timestamp}</time>
+              {row.requestId ? <span className="mt-1 block max-w-[150px] truncate font-mono text-[11px] text-slate-500" title={row.requestId}>{row.requestId}</span> : null}
+            </div>
           );
         }
         case "isError":
           return (
-            <span className={"inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-xs font-medium " + statusTone(row.isError)}>
-              <span className={"h-1.5 w-1.5 rounded-full " + (row.isError ? "bg-rose-300" : "bg-sky-300")} />
+            <span className={"inline-flex items-center gap-2 rounded-md px-2 py-1 text-xs font-medium " + (row.isError ? "bg-rose-500/10 text-rose-300 ring-1 ring-rose-500/20" : "bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/20")}>
+              <span className={"h-1.5 w-1.5 rounded-full " + (row.isError ? "bg-rose-400" : "bg-emerald-400")} />
               {row.isError ? "失败" : "成功"}
             </span>
           );
-        case "provider":
+        case "provider": {
+          const normalizedProvider = (row.provider || "").toLowerCase();
+          const logoClass = normalizedProvider.includes("xai") || normalizedProvider.includes("grok")
+            ? "bg-white text-slate-950"
+            : providerTone(row.provider);
+          const authLabel = authTypeLabel(row.authType);
           return (
-            <span className={"inline-flex max-w-full items-center rounded-md px-1.5 py-0.5 text-xs font-medium " + providerTone(row.provider)} title={row.provider || ""}>
-              <span className="truncate">{row.provider || "—"}</span>
-            </span>
+            <div className="flex min-w-0 items-center gap-3">
+              <span className={"flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-xl font-semibold " + logoClass} aria-hidden="true">
+                {providerMark(row.provider)}
+              </span>
+              <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate text-[13px] font-semibold text-slate-100">{providerLabel(row.provider)}</span>
+                  {authLabel ? <span className="shrink-0 rounded-md border border-slate-600/70 bg-slate-800/80 px-1.5 py-0.5 text-[10px] font-medium text-slate-300">{authLabel}</span> : null}
+                </div>
+                {row.credentialName ? <span className="mt-1 block truncate text-[11px] text-slate-500" title={row.credentialName}>{row.credentialName}</span> : null}
+              </div>
+            </div>
           );
+        }
         case "model":
           return (
             <div className="min-w-0 max-w-full" title={row.model}>
@@ -1051,19 +1152,14 @@ export default function RecordsPage() {
               ) : null}
             </div>
           );
-        case "requestMode":
-          return (
-            <div className="min-w-0 text-xs">
-              <div className="text-slate-200">{row.stream === null ? "—" : row.stream ? "流式" : "非流式"}</div>
-              {row.reasoningEffort ? (
-                <div className="truncate text-[11px] text-slate-500" title={"推理强度：" + row.reasoningEffort}>
-                  {row.reasoningEffort}
-                </div>
-              ) : row.generate === false ? (
-                <div className="text-[11px] text-slate-500">预检</div>
-              ) : null}
-            </div>
-          );
+        case "requestMode": {
+          const effort = reasoningEffortLabel(row.reasoningEffort);
+          return effort
+            ? <span className="inline-flex max-w-full items-center rounded-md border border-fuchsia-400/25 bg-fuchsia-500/10 px-2 py-1 text-xs font-medium text-fuchsia-300" title={"推理强度：" + effort}>{effort}</span>
+            : row.generate === false
+              ? <span className="text-xs text-slate-500">预检</span>
+              : muted;
+        }
         case "modelAlias": return textCell(row.modelAlias, 160);
         case "responseModel": return textCell(row.responseModel, 180);
         case "requestId": return <span className="block max-w-[220px] truncate font-mono text-xs text-indigo-200" title={row.requestId ?? ""}>{row.requestId || "—"}</span>;
@@ -1076,12 +1172,7 @@ export default function RecordsPage() {
         case "isCompaction": return booleanCell(row.isCompaction);
 
         case "route":
-          return (
-            <div className="min-w-0 max-w-full">
-              <span className="block truncate font-mono text-xs text-slate-200" title={row.route || ""}>{row.route || "—"}</span>
-              {row.credentialName ? <span className="block truncate text-[11px] text-slate-500" title={row.credentialName}>{row.credentialName}</span> : null}
-            </div>
-          );
+          return <span className="block truncate font-mono text-xs text-slate-300" title={row.route || ""}>{row.route || "—"}</span>;
         case "credentialName": return textCell(row.credentialName, 180);
         case "apiGroupLabel": return textCell(row.apiGroupLabel, 140);
         case "endpoint": return textCell(row.endpoint, 210);
@@ -1103,7 +1194,7 @@ export default function RecordsPage() {
               <div className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-[11px] text-slate-400">
                 <span className="shrink-0">↑ {formatCompactTokens(row.inputTokens)}</span>
                 <span className="shrink-0">↓ {formatCompactTokens(row.outputTokens)}</span>
-                {row.reasoningTokens > 0 ? <span className="shrink-0 text-amber-300/80">思 {formatCompactTokens(row.reasoningTokens)}</span> : null}
+                {row.reasoningTokens > 0 ? <span className="inline-flex shrink-0 items-center gap-0.5 text-amber-300/80"><Lightbulb aria-hidden="true" className="h-3 w-3" />{formatCompactTokens(row.reasoningTokens)}</span> : null}
               </div>
             </div>
           );
@@ -1129,6 +1220,23 @@ export default function RecordsPage() {
               {row.ttftMs !== null ? <div className="whitespace-nowrap text-[11px] text-slate-500">TTFT {formatDuration(row.ttftMs)}</div> : null}
             </div>
           );
+        case "outputRate": {
+          const rate = calculateOutputRate(row);
+          return rate === null
+            ? muted
+            : <span className="whitespace-nowrap font-mono text-[13px] tabular-nums text-slate-200">{rate.toFixed(2)} t/s</span>;
+        }
+        case "cacheRate": {
+          const rate = calculateCacheRate(row);
+          return rate === null
+            ? muted
+            : <span className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap font-mono text-[13px] tabular-nums text-amber-300">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                {rate.toFixed(1)}%
+              </span>;
+        }
+        case "details":
+          return <ChevronRight aria-hidden="true" className="mx-auto h-4 w-4 text-slate-500 transition-colors group-hover:text-indigo-300" />;
         case "ttftMs": return numberCell(row.ttftMs, " ms");
         case "statusCode": return numberCell(row.statusCode);
         case "cost":
@@ -1148,7 +1256,7 @@ export default function RecordsPage() {
           return null;
       }
     },
-    [providerTone, statusTone]
+    [providerTone]
   );
   const filterSummary = useMemo(() => {
     const parts: string[] = [];
@@ -1232,11 +1340,19 @@ export default function RecordsPage() {
     }
     try {
       const current = window.localStorage.getItem(COLUMN_SETTINGS_STORAGE_KEY);
-      const legacy = window.localStorage.getItem(LEGACY_COLUMN_SETTINGS_STORAGE_KEY) ?? window.localStorage.getItem(OLDER_COLUMN_SETTINGS_STORAGE_KEY);
+      const legacy = window.localStorage.getItem(LEGACY_COLUMN_SETTINGS_STORAGE_KEY)
+        ?? window.localStorage.getItem(OLDER_COLUMN_SETTINGS_STORAGE_KEY)
+        ?? window.localStorage.getItem(OLDEST_COLUMN_SETTINGS_STORAGE_KEY);
       const raw = current ?? legacy;
       if (raw) {
         const parsed = JSON.parse(raw) as unknown;
-        if (current || !isUntouchedLegacyColumnLayout(parsed)) setColumnSettings(normalizeColumnSettings(parsed));
+        if (current) {
+          setColumnSettings(normalizeColumnSettings(parsed));
+        } else if (isUntouchedPreviousCompactLayout(parsed)) {
+          setColumnSettings(migratePreviousCompactLayout(parsed));
+        } else if (!isUntouchedLegacyColumnLayout(parsed)) {
+          setColumnSettings(normalizeColumnSettings(parsed));
+        }
       }
     } catch {
       setColumnSettings(defaultColumnSettings());
@@ -1657,21 +1773,17 @@ export default function RecordsPage() {
                           setSelectedRecord({ id: row.id, occurredAt: row.occurredAt });
                         }
                       }}
-                      className={"group h-[68px] cursor-pointer text-slate-100 transition-colors even:bg-slate-800/20 hover:bg-slate-800/70 focus:outline-none focus-visible:bg-indigo-500/15 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 " + (selectedRecord?.id === row.id ? "bg-indigo-500/10" : "")}
+                      className={"group h-[88px] cursor-pointer text-slate-100 transition-colors even:bg-slate-800/20 hover:bg-slate-800/70 focus:outline-none focus-visible:bg-indigo-500/15 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400 " + (selectedRecord?.id === row.id ? "bg-indigo-500/10" : "")}
                     >
-                      {visibleColumns.map((columnKey, index) => {
+                      {visibleColumns.map((columnKey) => {
                         const width = adaptiveWidthMap.get(columnKey) ?? DEFAULT_COLUMN_WIDTHS[columnKey];
-                        const isLast = index === visibleColumns.length - 1;
                         return (
                           <td
                             key={row.id + "-" + columnKey}
-                            className={"relative min-w-0 overflow-hidden whitespace-nowrap px-3 py-3 align-middle " + (RIGHT_ALIGNED_COLUMNS.has(columnKey) ? "text-right" : "text-left") + (isLast ? " pr-7" : "")}
+                            className={"relative min-w-0 overflow-hidden whitespace-nowrap px-3 py-4 align-middle " + (columnKey === "details" ? "text-center" : RIGHT_ALIGNED_COLUMNS.has(columnKey) ? "text-right" : "text-left")}
                             style={{ width: width + "px", minWidth: width + "px" }}
                           >
                             {renderCellByColumn(columnKey, row)}
-                            {isLast ? (
-                              <ChevronRight aria-hidden="true" className="pointer-events-none absolute right-1 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-600 transition-colors group-hover:text-indigo-300" />
-                            ) : null}
                           </td>
                         );
                       })}

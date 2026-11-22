@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ArrowRight, AlertTriangle, CheckCircle2, ChevronRight, Clock3, Copy, Database, Download, Gauge, LoaderCircle, Network, X, Zap } from "lucide-react";
 import type { CredentialErrorEvidence, ErrorCoverageStatus } from "@/lib/types";
+import { calculateCacheRate, calculateOutputRate } from "@/lib/records/metrics";
 
 type RecordDetails = {
   credentialErrors?: CredentialErrorEvidence;
@@ -258,23 +259,7 @@ function getTokenSegments(record: RecordDetails): { segments: TokenSegment[]; un
   return { segments, unplacedReasoning };
 }
 
-function cacheRate(record: RecordDetails): number | null {
-  const cached = Math.max(0, record.cacheReadTokens || record.cachedTokens || 0);
-  if (cached <= 0) return 0;
-  let prompt = Math.max(0, record.inputTokens || (record.totalTokens - record.outputTokens));
-  if (prompt <= 0 && record.totalTokens > 0) prompt = record.totalTokens;
-  const denominator = cached > prompt ? prompt + cached : prompt;
-  return denominator > 0 ? Math.min(100, Math.max(0, cached / denominator * 100)) : null;
-}
 
-function outputRate(record: RecordDetails): number | null {
-  const status = String(record.accountingStatus ?? asObject(record.tokenAccounting)?.status ?? "legacy").toLowerCase();
-  const trustedAccounting = ["complete", "valid", "canonical", "verified", "reconciled", "exact", "legacy"].includes(status);
-  if (record.generate === false || !trustedAccounting) return null;
-  if (!record.latencyMs || record.latencyMs <= 0 || !record.outputTokens || record.outputTokens <= 0) return null;
-  const rate = record.outputTokens * 1000 / record.latencyMs;
-  return Number.isFinite(rate) ? rate : null;
-}
 
 function responseHeaderRows(value: unknown): Array<{ name: string; value: string }> {
   if (typeof value === "string") {
@@ -495,10 +480,10 @@ export default function RecordDetailsDrawer({ eventId, occurredAt, onClose }: Pr
     if (!record || record.cost === null || record.cost === undefined) return "未定价";
     return moneyText(record.cost, record.costCurrency ?? "USD");
   }, [record]);
-  const rate = useMemo(() => record ? outputRate(record) : null, [record]);
+  const rate = useMemo(() => record ? calculateOutputRate(record) : null, [record]);
   const segments = useMemo(() => record ? getTokenSegments(record) : { segments: [], unplacedReasoning: 0 }, [record]);
   const segmentTotal = segments.segments.reduce((sum, item) => sum + item.value, 0);
-  const cacheHitRate = record ? cacheRate(record) : null;
+  const cacheHitRate = record ? calculateCacheRate(record) : null;
   const headers = useMemo(() => responseHeaderRows(record?.responseHeaders), [record?.responseHeaders]);
   const accountingStatus = record?.accountingStatus ?? (asObject(record?.tokenAccounting)?.status as string | undefined) ?? (record?.tokenAccounting ? "unknown" : "legacy");
   const accountingComplete = ["complete", "valid", "canonical", "verified", "reconciled", "exact"].includes(String(accountingStatus).toLowerCase());

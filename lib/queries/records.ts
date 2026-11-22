@@ -140,6 +140,7 @@ const listSelection = {
   costNanos: usageEvents.costNanos,
   costCurrency: usageEvents.costCurrency,
   pricingStatus: usageEvents.pricingStatus,
+  accountingStatus: sql<string | null>`${usageEvents.tokenAccounting}->>'status'`,
   priceVersionId: usageEvents.priceVersionId
 };
 

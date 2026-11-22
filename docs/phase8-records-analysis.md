@@ -7,8 +7,8 @@ Upgrade `/records` into a request-event analysis workspace while retaining Monit
 ## UI
 
 - Configurable event columns: show/hide, drag reorder, resize, and browser-local persistence.
-- Column preferences use `records-column-settings-v3`; the page reads and migrates the previous v2 preference document.
-- Default columns emphasize request identity, result, provider/model, credential, token/cache accounting, latency, TTFT and cost. Session ID, Parent Session ID, Execution ID, Trace ID, Node Kind, Fork and Compaction are also configurable.
+- Column preferences use `records-column-settings-v5`; the page migrates the prior v4 compact default to the OMC-aligned layout, while preserving explicit custom column choices and older v2/v3 preferences.
+- The default 12-column layout follows the supplied OMC `usage/events` row: request time with Request ID, result, provider brand/Auth Type/credential, model, reasoning mode, TPS, latency with TTFT, total/input/output/reasoning tokens, cost, cache-hit rate, masked Key and a dedicated detail affordance. Session ID, Parent Session ID, Execution ID, Trace ID, Node Kind, Fork and Compaction remain configurable.
 - Clicking a row opens a detail drawer. The drawer loads the full event only when requested rather than adding large diagnostic payloads to every list response.
 - Detail sections cover routing, model resolution, reasoning/service tiers, token accounting, execution/session context, pricing, error details, sanitized response headers and sanitized raw payload.
 
